@@ -20,10 +20,25 @@ Here is a quick comparison of the architectural changes:
 
 ## Main Benefits of MCOA
 
-* **Improved Configurability:** You can now directly configure custom resources deployed on your spokes using standard upstream Prometheus operator APIs.
-* **Sharded Metrics Federation:** By using distinct `ScrapeConfigs`, metrics can be federated independently from the in-cluster Prometheus, drastically increasing scalability as cardinality grows.
-* **Standard Remote Write:** MCOA utilizes the standard Prometheus remote-write protocol to send metrics from the spokes to the hub, offering much better payload management and performance under high load.
-* **Unmatched Network Resiliency:** The new Prometheus Agent uses a local Write Ahead Log (WAL) to securely buffer federated metric samples on the managed cluster's disk. This provides robust resiliency against network partitions, allowing the system to survive outages of up to one hour without any data loss before re-syncing with the hub.
+**Improved Configurability**
+MCOA shifts away from relying on custom legacy components, such as the endpoint operator and metrics collector, in favor of established upstream open-source alternatives. 
+* **Standard Kubernetes APIs:** Instead of managing a single monolithic custom resource, configuration is now handled directly using standard Kubernetes APIs such as **`PrometheusAgent`**, **`ScrapeConfig`**, and **`PrometheusRule`** [1]. 
+* **Targeted and Safe Customization:** The `multicluster-observability-addon-manager` automatically creates these configurations for each placement referenced in your `ClusterManagementAddOn`  The manager utilizes Kubernetes server-side apply to strictly enforce critical system invariants (like remote write routing), while safely allowing administrators to customize other operational fields, such as the `scrapeInterval` or `logLevel`, without their changes being constantly overwritten.
+
+**Sharded Metrics Federation**
+As your fleet and metric cardinality grow, collecting all telemetry data in a single massive request becomes a significant performance bottleneck. 
+* **Independent Extraction:** MCOA leverages the Federation API from the in-cluster Prometheus to downsample and extract necessary metric subsets. 
+* **Parallel Workloads:** By defining metrics in distinct `ScrapeConfigs`, the workload is sharded. Metrics are federated independently and in parallel rather than in a single pull, which drastically increases scalability and system stability as cardinality grows .
+
+**Standard Remote Write**
+MCOA abandons custom payload delivery methods in favor of the industry-standard Prometheus `remoteWrite` protocol, optimizing how data is transmitted from the spoke clusters to the hub .
+* **Performance Under Load:** This standard protocol natively offers much better payload management, ensuring that data is sent efficiently and reliably, even under extremely high metric loads.
+* **Advanced Pipeline Tuning:** Platform engineers gain direct access to fine-tune the delivery pipeline. You can optimize throughput by adapting the **`queueConfig`** and **`remoteTimeout`**, or apply **`writeRelabelConfigs`** to drop unnecessary metrics before they consume network bandwidth. Additionally, it allows you to configure custom remote-write targets, enabling managed clusters to send metrics directly to external third-party endpoints in real time.
+
+**Unmatched Network Resiliency**
+Edge environments and distributed fleets are frequently prone to network instability. MCOA introduces robust mechanisms to maintain the integrity of your monitoring data during these disruptions.
+* **Local Buffering:** The new Prometheus Agent leverages a local Write Ahead Log (WAL) to securely buffer federated metric samples directly onto the managed cluster's disk. 
+* **Extended Outage Tolerance:** This architecture provides robust resiliency against network partitions. It allows the system to safely buffer data and survive outages of **up to 2 hours** between the spoke and hub clusters without any data loss before successfully re-syncing.
 
 ## How to Migrate & Enable User-Workload Monitoring
 
