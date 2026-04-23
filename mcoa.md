@@ -22,7 +22,7 @@ Here is a quick comparison of the architectural changes:
 
 **Improved Configurability**
 MCOA shifts away from relying on custom legacy components, such as the endpoint operator and metrics collector, in favor of established upstream open-source alternatives. 
-* **Standard Kubernetes APIs:** Instead of managing a single monolithic custom resource, configuration is now handled directly using standard Kubernetes APIs such as **`PrometheusAgent`**, **`ScrapeConfig`**, and **`PrometheusRule`** [1]. 
+* **Standard Kubernetes APIs:** Instead of managing a single monolithic custom resource, configuration is now handled directly using standard Kubernetes APIs such as **`PrometheusAgent`**, **`ScrapeConfig`**, and **`PrometheusRule`**. 
 * **Targeted and Safe Customization:** The `multicluster-observability-addon-manager` automatically creates these configurations for each placement referenced in your `ClusterManagementAddOn`  The manager utilizes Kubernetes server-side apply to strictly enforce critical system invariants (like remote write routing), while safely allowing administrators to customize other operational fields, such as the `scrapeInterval` or `logLevel`, without their changes being constantly overwritten.
 
 **Sharded Metrics Federation**
