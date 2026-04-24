@@ -1,6 +1,6 @@
 # A Guide to the New Era of Observability in Red Hat Advanced Cluster Management
 
-We heard you: Observability is evolving in Red Hat Advanced Cluster Management for Kubernetes (RHACM). As with everything we build at Red Hat, this evolution is about staying aligned with the latest community best practices while also meeting the most pressing needs of our enterprise customers.
+Observability is evolving in Red Hat Advanced Cluster Management for Kubernetes (RHACM). As with everything we build at Red Hat, this evolution is about staying aligned with the latest community best practices while also meeting the most pressing needs of our enterprise customers.
 
 There's no complex migration or heavy lifting required. This blog walks through what has changed with the transition to the MultiCluster Observability Addon (MCOA), how you can seamlessly monitor user workloads, optimize your metrics to control costs, and immediately benefit from built-in network observability.
 
@@ -35,7 +35,7 @@ MCOA abandons custom payload delivery methods in favor of the industry-standard 
 * **Performance Under Load:** This standard protocol natively offers much better payload management, ensuring that data is sent efficiently and reliably, even under extremely high metric loads.
 * **Advanced Pipeline Tuning:** Platform engineers gain direct access to fine-tune the delivery pipeline. You can optimize throughput by adapting the **`queueConfig`** and **`remoteTimeout`**, or apply **`writeRelabelConfigs`** to drop unnecessary metrics before they consume network bandwidth. Additionally, it allows you to configure custom remote-write targets, enabling managed clusters to send metrics directly to external third-party endpoints in real time.
 
-**Unmatched Network Resiliency**
+**Improved Network Resiliency**
 Edge environments and distributed fleets are frequently prone to network instability. MCOA introduces robust mechanisms to maintain the integrity of your monitoring data during these disruptions.
 * **Local Buffering:** The new Prometheus Agent leverages a local Write Ahead Log (WAL) to securely buffer federated metric samples directly onto the managed cluster's disk. 
 * **Extended Outage Tolerance:** This architecture provides robust resiliency against network partitions. It allows the system to safely buffer data and survive outages of **up to 2 hours** between the spoke and hub clusters without any data loss before successfully re-syncing.
@@ -44,21 +44,27 @@ Edge environments and distributed fleets are frequently prone to network instabi
 
 If you are using the legacy stack, adopting MCOA is straightforward. Apply the following configuration to your `MultiClusterObservability` custom resource to enable both the platform and user-workload stacks simultaneously:
 
-```yaml
+```
 apiVersion: observability.open-cluster-management.io/v1beta2
 kind: MultiClusterObservability
 metadata:
   name: observability
-spec:
+Spec:
+  instanceSize: <size_value> # e.g., small, medium, large
   capabilities:
     platform:
+      analytics:
+        namespaceRightSizingRecommendation:
+          enabled: true # <-- Enables namespace right-sizing
+        virtualizationRightSizingRecommendation:
+          enabled: true # <-- Enables VM right-sizing
       metrics:
         default:
-          enabled: true # <-- required for platform metrics
+          enabled: true # <-- Required to enable MCOA for platform metrics
     userWorkloads:
       metrics:
-        collection:
-          enabled: true # <-- enables the user-workload monitoring pipeline
+        default:
+          enabled: true # <-- Optional to enable MCOA for user workload metrics. . .
 ```
 
 When executed, this removes the legacy stack and deploys the new `multicluster-observability-addon-manager`. The manager automatically generates the necessary default `PrometheusAgents` and `ScrapeConfigs` for both your platform and user workloads across your fleet.
