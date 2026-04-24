@@ -68,5 +68,3 @@ spec:
           sourceLabels:
             - alertname
 ```
-
-> **Note:** The closing triple backticks on the inner code blocks above have a space inserted to prevent them from terminating this outer block. Remove the space (`` ` `` `` ` `` `` ` `` → ` ``` `) in your actual `.md` file.
