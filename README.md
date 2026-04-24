@@ -1,1 +1,1 @@
-Some info about the new MultiCluster Observability Addon MCOA 
+Some info about the new MultiCluster Observability Addon MCOA for Metrics Collection 
