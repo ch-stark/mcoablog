@@ -8,7 +8,7 @@ To implement pre-aggregation, you define a `PrometheusRule` to calculate the agg
 
 This rule aggregates raw memory data into a new, lower-cardinality sum metric.
 
-`````yaml
+```yaml
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -21,13 +21,13 @@ spec:
       # Creates a new aggregated metric locally on the spoke
       - record: container_memory_rss:sum
         expr: sum(container_memory_rss) by (container, namespace)
-` ``
+```
 
 ### Step B: Create the ScrapeConfig
 
 This configuration targets the new aggregated metric to be federated and sent to the hub. Be sure to include the proper `app.kubernetes.io/component` label so MCOA applies it to the correct Prometheus Agent.
 
-````yaml
+```yaml
 apiVersion: monitoring.rhobs/v1alpha1
 kind: ScrapeConfig
 metadata:
@@ -42,7 +42,7 @@ spec:
     match[]:
     # Collect ONLY the new pre-aggregated record, dropping the raw data
     - '{__name__="container_memory_rss:sum"}'
-` ``
+```
 
 ---
 
@@ -67,7 +67,6 @@ spec:
           regex: ^Watchdog$
           sourceLabels:
             - alertname
-` ``
 ```
 
 > **Note:** The closing triple backticks on the inner code blocks above have a space inserted to prevent them from terminating this outer block. Remove the space (`` ` `` `` ` `` `` ` `` → ` ``` `) in your actual `.md` file.
