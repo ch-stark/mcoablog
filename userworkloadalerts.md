@@ -1,9 +1,5 @@
 # How to Test Your MCOA Alert Forwarding Pipeline End-to-End (Without Breaking Anything)
  
-**Posted in:** OpenShift · Observability · RHACM  
-**Reading time:** ~8 minutes
- 
----
  
 One of the trickiest parts of setting up Multi-Cluster Observability Architecture (MCOA) alert
 forwarding isn't writing the policy — it's verifying that the whole pipeline actually works.
@@ -17,8 +13,7 @@ Alertmanager — without any application code at all.
  
 Here's a complete, step-by-step walkthrough.
  
----
- 
+
 ## Prerequisites
  
 Before you begin, make sure the following are in place:
@@ -128,8 +123,7 @@ The `externalLabels` block is particularly important — it stamps every forward
 `managed_cluster` label derived from the spoke's cluster ID claim, so you always know which
 cluster an alert originated from.
  
----
- 
+
 ## Step 2: Deploy the Test Alert (Managed Cluster)
  
 Log in to your **managed cluster** and apply the following YAML. This creates a dedicated test
@@ -180,7 +174,6 @@ continuous minute. This mirrors real-world alert behaviour. If you want an insta
 rapid iteration, change `for: 1m` to `for: 0m` — but be aware this isn't representative of
 how most production alerts are configured.
  
----
  
 ## Step 3: Verify the Pipeline
  
@@ -205,8 +198,7 @@ If the alert appears on the Hub with the correct label, your entire forwarding p
 working: rule evaluation → local Prometheus → TLS-authenticated forwarding → Hub
 Alertmanager → Grafana.
  
----
- 
+
 ## Step 4: Clean Up
  
 Once you've verified the pipeline, remove the test resources to stop the alert from firing.
@@ -218,7 +210,6 @@ kubectl delete namespace mcoa-alert-test
 Deleting the namespace removes both the `PrometheusRule` and the test namespace. The alert
 will resolve in Alertmanager within a few minutes.
  
----
  
 ## Troubleshooting Quick Reference
  
@@ -229,7 +220,6 @@ will resolve in Alertmanager within a few minutes.
 | Alert on Hub missing `managed_cluster` label | `fromClusterClaim "id.openshift.io"` not resolving; verify cluster claim exists |
 | Policy not applying | `Placement` named `global` doesn't exist; check PlacementBinding |
  
----
  
 ## Wrapping Up
  
