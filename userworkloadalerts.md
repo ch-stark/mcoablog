@@ -299,8 +299,7 @@ oc -n open-cluster-management-observability exec -it observability-alertmanager-
 If the alert shows up in the amtool or curl output with the correct managed_cluster label, your entire forwarding pipeline is successfully configured.
 
 
-## Step 4: Cle
-an Up
+## Step 4: Clean Up
 
 Once you've verified the pipeline, remove the test resources to stop the alert from firing.
 
