@@ -357,6 +357,69 @@ will pick them up and add the forwarding configuration.
 | Hub template error | `hub-ingress-reader` ServiceAccount or RBAC not created; apply Step 1 |
 
 
+## Alternative: ScrapeConfig-Based Alert Collection
+
+The policy-based approach above uses `additionalAlertmanagerConfigs` to push alerts from the
+spoke's Prometheus directly to the Hub Alertmanager. An alternative is to **pull** alerts via
+federation using a `ScrapeConfig` resource.
+
+The MCO operator already uses this pattern for platform alerts (see
+[`platform-metrics-alerts`](https://github.com/stolostron/multicluster-observability-operator/blob/main/operators/multiclusterobservability/manifests/base/grafana/alerts/scrape-config.yaml)).
+The same approach works for User Workload alerts.
+
+### UWL Alerts ScrapeConfig
+
+Apply the following `ScrapeConfig` to the **Hub cluster**. It federates the `ALERTS` metric
+from each managed cluster's User Workload Prometheus:
+
+```yaml
+apiVersion: monitoring.rhobs/v1alpha1
+kind: ScrapeConfig
+metadata:
+  labels:
+    app.kubernetes.io/component: uwl-metrics-collector
+    app.kubernetes.io/part-of: multicluster-observability-addon
+    app.kubernetes.io/managed-by: multicluster-observability-operator
+  name: uwl-metrics-alerts
+  namespace: open-cluster-management-observability
+spec:
+  jobName: uwl-alerts
+  metricsPath: /federate
+  params:
+    match[]:
+    - '{__name__="ALERTS"}'
+  metricRelabelings:
+  - action: labeldrop
+    regex: managed_cluster|id
+```
+
+A ready-to-use copy is available at [`uwl-alerts-scrape-config.yaml`](uwl-alerts-scrape-config.yaml).
+
+### AddonDeploymentConfig Integration
+
+For the MCO addon agent to recognize and deploy this ScrapeConfig to managed clusters, it
+must be registered in the `AddOnDeploymentConfig`. The addon agent reads the list of
+ScrapeConfig resources from its configuration and deploys them as part of the
+`PrometheusAgent` setup on each spoke.
+
+If you are adding this ScrapeConfig outside the operator (i.e., not baked into the MCO
+manifests), you need to ensure the addon picks it up. Check your
+`AddOnDeploymentConfig` in `open-cluster-management-observability` and verify the
+ScrapeConfig is included in the agent's resource list.
+
+### When to Use Which Approach
+
+| | Policy (`additionalAlertmanagerConfigs`) | ScrapeConfig (federation) |
+|---|---|---|
+| **How it works** | Spoke Prometheus pushes alerts to Hub Alertmanager | Hub federates `ALERTS` metric from spoke Prometheus |
+| **Where alerts land** | Hub Alertmanager (native alerts) | Hub Thanos/Prometheus (as metrics) |
+| **Grafana visibility** | No — Alertmanager only | Yes — queryable as metrics in Grafana dashboards |
+| **Best for** | Real-time alert routing and notification | Dashboarding, trend analysis, cross-cluster alert views |
+| **Requires** | Bearer token Secret + CA ConfigMap on spoke | ScrapeConfig registered in addon config |
+
+You can use both approaches together — they are complementary, not mutually exclusive.
+
+
 ## Wrapping Up
 
 Using `vector(1)` as a test expression is one of those small tricks that makes a big
