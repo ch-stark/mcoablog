@@ -276,17 +276,34 @@ Allow up to two minutes after the policy is applied, then check both ends of the
 
 This confirms the local User Workload Prometheus evaluated the rule correctly.
 
-### On the Hub Cluster
+### On the Hub Cluster (Alertmanager)
 
-1. Open the **RHACM Grafana instance**.
-2. Navigate to the **Alerts** dashboard or the **Alert Analysis** view.
-3. You should see `MCOA_Pipeline_Test_Alert` actively firing.
-4. Expand the alert details — confirm it carries the `managed_cluster` label with the spoke's
-   cluster ID.
+Forwarded alerts arrive in the **Hub Alertmanager**, not Grafana. Open the Alertmanager UI
+directly:
 
-If the alert appears on the Hub with the correct label, your entire forwarding pipeline is
-working: rule evaluation -> local Prometheus -> TLS-authenticated forwarding -> Hub
-Alertmanager -> Grafana.
+```
+https://alertmanager-open-cluster-management-observability.apps.<hub-domain>
+```
+
+1. Navigate to the **Alerts** tab.
+2. Search or filter for `MCOA_Pipeline_Test_Alert`.
+3. The alert should appear with these labels:
+   - `managed_cluster` — the spoke's cluster ID
+   - `severity` — `critical`
+   - `testing_mcoa` — `true`
+
+You can also verify from the command line on the Hub:
+
+```bash
+oc -n open-cluster-management-observability port-forward svc/alertmanager 9093:9093 &
+
+curl -s http://localhost:9093/api/v2/alerts | \
+  python3 -c "import json,sys; [print(a['labels']['alertname'], a['labels'].get('managed_cluster','')) for a in json.load(sys.stdin) if a['labels']['alertname']=='MCOA_Pipeline_Test_Alert']"
+```
+
+If the alert appears on the Hub with the correct `managed_cluster` label, your entire
+forwarding pipeline is working: rule evaluation -> local Prometheus -> TLS-authenticated
+forwarding -> Hub Alertmanager.
 
 
 ## Step 4: Clean Up
