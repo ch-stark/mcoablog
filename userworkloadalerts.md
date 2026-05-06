@@ -93,7 +93,7 @@ spec:
                 namespace: openshift-user-workload-monitoring
               data:
                 config.yaml: |
-                  {{ merge $currentConfig $forwardingConfig | toYaml | autoindent }}
+                  {{ mustMergeOverwrite $currentConfig $forwardingConfig | toYaml | autoindent }}
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
@@ -117,7 +117,7 @@ subjects:
 | **1** | Looks up the Hub's Ingress domain and derives a short name (first segment) |
 | **2** | Reads the spoke's existing `user-workload-monitoring-config` to avoid overwriting it |
 | **3** | Constructs the `additionalAlertmanagerConfigs` payload with mTLS and bearer token auth |
-| **4** | Merges the new config into the existing one and writes it back |
+| **4** | Merges the forwarding config into the existing one (forwarding config wins on conflicts) and writes it back |
  
 The `externalLabels` block is particularly important — it stamps every forwarded alert with a
 `managed_cluster` label derived from the spoke's cluster ID claim, so you always know which
