@@ -405,7 +405,7 @@ ScrapeConfig is included in the agent's resource list.
 |---|---|---|
 | **How it works** | Spoke Prometheus pushes alerts to Hub Alertmanager | Hub federates `ALERTS` metric from spoke Prometheus |
 | **Where alerts land** | Hub Alertmanager (native alerts) | Hub Thanos/Prometheus (as metrics) |
-| **Grafana visibility** | No — Alertmanager only | Yes — queryable as metrics in Grafana dashboards |
+| **Perses/Grafana visibility** | No — Alertmanager only | Yes — queryable as metrics in Grafana dashboards |
 | **Best for** | Real-time alert routing and notification | Dashboarding, trend analysis, cross-cluster alert views |
 | **Requires** | Bearer token Secret + CA ConfigMap on spoke | ScrapeConfig registered in addon config |
 
