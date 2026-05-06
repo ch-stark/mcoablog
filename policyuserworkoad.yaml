@@ -1,0 +1,193 @@
+# ============================================================
+# RBAC: Allow the policy engine to read the Hub Ingress config
+# ============================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hub-ingress-reader
+  namespace: open-cluster-management-global-set
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hub-ingress-reader-role
+rules:
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hub-ingress-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hub-ingress-reader-role
+subjects:
+  - kind: ServiceAccount
+    name: hub-ingress-reader
+    namespace: open-cluster-management-global-set
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: mcoa-uwm-full
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+spec:
+  disabled: false
+  remediationAction: enforce
+  hubTemplateOptions:
+    serviceAccountName: hub-ingress-reader
+  policy-templates:
+
+    # 1. Enable User Workload Monitoring
+    # ----------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: enable-user-workload-monitoring
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include: ["openshift-monitoring"]
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: cluster-monitoring-config
+                  namespace: openshift-monitoring
+                data:
+                  config.yaml: |
+                    enableUserWorkload: true
+
+    # 2. Configure Alert Forwarding (Dynamic Discovery)
+    # ----------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: mcoa-alert-forward-uwl
+        spec:
+          remediationAction: enforce
+          severity: medium
+          namespaceSelector:
+            include: ["openshift-user-workload-monitoring"]
+          object-templates-raw: |
+            {{- /* Discover Hub-specific Secret names on the Spoke */ -}}
+            {{- $tokenSecret := "" -}}
+            {{- $caSecret := "" -}}
+            {{- range (lookup "v1" "Secret" "openshift-user-workload-monitoring" "").items -}}
+              {{- if hasPrefix "observability-alertmanager-accessor-" .metadata.name -}}
+                {{- $tokenSecret = .metadata.name -}}
+              {{- end -}}
+              {{- if hasPrefix "hub-alertmanager-router-ca-" .metadata.name -}}
+                {{- $caSecret = .metadata.name -}}
+              {{- end -}}
+            {{- end -}}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: user-workload-monitoring-config
+                  namespace: openshift-user-workload-monitoring
+                data:
+                  config.yaml: |
+                    prometheus:
+            {{- if and $tokenSecret $caSecret }}
+                      additionalAlertmanagerConfigs:
+                      - apiVersion: v2
+                        bearerToken:
+                          key: token
+                          name: {{ $tokenSecret }}
+                        scheme: https
+                        staticConfigs:
+                        - alertmanager-open-cluster-management-observability.{{hub (lookup "config.openshift.io/v1" "Ingress" "" "cluster").spec.domain hub}}
+                        tlsConfig:
+                          ca:
+                            key: service-ca.crt
+                            name: {{ $caSecret }}
+                          insecureSkipVerify: false
+            {{- end }}
+                      externalLabels:
+                        managed_cluster: '{{ fromClusterClaim "id.openshift.io" }}'
+
+    # 3. Create Test Infrastructure (Namespace)
+    # ----------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: mcoa-test-namespace
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: mcoa-alert-test
+                  labels:
+                    mcoa-test: "true"
+
+    # 4. Deploy Always-Firing Test Alert
+    # ----------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: mcoa-test-alert-rule
+        spec:
+          remediationAction: enforce
+          severity: low
+          namespaceSelector:
+            include: ["mcoa-alert-test"]
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: monitoring.coreos.com/v1
+                kind: PrometheusRule
+                metadata:
+                  name: force-test-alert
+                  namespace: mcoa-alert-test
+                  labels:
+                    openshift.io/prometheus-rule-evaluation-scope: leaf-prometheus
+                spec:
+                  groups:
+                    - name: mcoa-test-group
+                      rules:
+                        - alert: MCOA_Pipeline_Test_Alert
+                          expr: vector(1)
+                          for: 1m
+                          labels:
+                            severity: critical
+                            testing_mcoa: "true"
+                          annotations:
+                            summary: "MCOA UWL Alert Forwarding is Working"
+                            description: "Test alert traversing from spoke to Hub Alertmanager."
+
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: mcoa-uwm-full-placement
+  namespace: open-cluster-management-global-set
+placementRef:
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+  name: global
+subjects:
+  - apiGroup: policy.open-cluster-management.io
+    kind: Policy
+    name: mcoa-uwm-full
