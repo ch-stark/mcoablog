@@ -1,4 +1,3 @@
-=======
 # How to Test Your MCOA (User) Alert Forwarding Pipeline End-to-End 
  
 One of the trickiest parts of setting up Multi-Cluster Observability Architecture (MCOA) alert
