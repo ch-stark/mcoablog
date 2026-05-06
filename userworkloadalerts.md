@@ -276,10 +276,31 @@ Allow up to two minutes after the policy is applied, then check both ends of the
 
 This confirms the local User Workload Prometheus evaluated the rule correctly.
 
+### On the Hub Cluster
+
+Red Hat Advanced Cluster Management includes the amtool (Alertmanager CLI) utility inside the pod specifically for this purpose
+
+Run the following command to execute into the active Alertmanager pod on the Hub and list all currently firing alerts:
+
+```bash
+oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- amtool alert --alertmanager.url="http://localhost:9093"
+```
+To filter specifically for your MCOA test alert and view the labels (which will prove the managed_cluster tag successfully traversed the network):
+
+```bash
+oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- amtool alert query alertname="MCOA_Pipeline_Test_Alert" --alertmanager.url="http://localhost:9093"
+```
+If you prefer to see the raw JSON output to verify every label exactly as you were attempting to do with your Python snippet, you can use the local curl inside the pod, which is trusted and not blocked by the OAuth proxy:
+
+```bash
+oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- curl -s http://localhost:9093/api/v2/alerts | grep -A 10 "MCOA_Pipeline_Test_Alert"
+```
+
+If the alert shows up in the amtool or curl output with the correct managed_cluster label, your entire forwarding pipeline is successfully configured.
 
 
-
-## Step 4: Clean Up
+## Step 4: Cle
+an Up
 
 Once you've verified the pipeline, remove the test resources to stop the alert from firing.
 
