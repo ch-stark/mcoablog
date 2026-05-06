@@ -1,0 +1,18 @@
+apiVersion: monitoring.rhobs/v1alpha1
+kind: ScrapeConfig
+metadata:
+  labels:
+    app.kubernetes.io/component: uwl-metrics-collector
+    app.kubernetes.io/part-of: multicluster-observability-addon
+    app.kubernetes.io/managed-by: multicluster-observability-operator
+  name: uwl-metrics-alerts
+  namespace: open-cluster-management-observability
+spec:
+  jobName: uwl-alerts
+  metricsPath: /federate
+  params:
+    match[]:
+    - '{__name__="ALERTS"}'
+  metricRelabelings:
+  - action: labeldrop
+    regex: managed_cluster|id
