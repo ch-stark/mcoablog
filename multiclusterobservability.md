@@ -11,8 +11,7 @@ kind: MultiClusterObservability
 
 configures the full observability stack in Red Hat Advanced Cluster Management (ACM). It covers sizing, metric collection, storage, and external export.
 
----
- 
+
 ## 1. T-Shirt Sizing (`instanceSize`)
  
 Instead of manually tuning CPU/memory limits per component, you pick a profile:
@@ -30,7 +29,6 @@ spec:
  
 > ⚠️ **Warning:** Any manual CPU/memory/replica overrides in the `advanced` block will **completely override** the `instanceSize` settings for that component.
  
----
  
 ## 2. MCOA & Right-Sizing (`capabilities`)
  
@@ -53,8 +51,7 @@ capabilities:
         enabled: true
 ```
  
----
- 
+
 ## 3. Observability Addon Global Settings (`observabilityAddonSpec`)
  
 Configures the data collection agents on all managed clusters.
@@ -66,8 +63,7 @@ observabilityAddonSpec:
   workers: 4          # parallel shards for federated requests
 ```
  
----
- 
+
 ## 4. Storage & External Export (`storageConfig`)
  
 Defines persistent volume sizes for Thanos components and optional forwarding to external endpoints.
@@ -119,7 +115,6 @@ stringData:
  
 > ⚠️ `writeStorage` forwards **all** metrics to external endpoints without filtering.
  
----
  
 ## 5. Retention & Downsampling (`advanced`)
  
@@ -137,7 +132,6 @@ advanced:
     deleteDelay: 48h
 ```
  
----
  
 ## Key Takeaways
  
