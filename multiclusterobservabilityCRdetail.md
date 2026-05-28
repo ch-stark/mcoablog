@@ -60,7 +60,7 @@ Configures the data collection agents on all managed clusters.
 observabilityAddonSpec:
   enableMetrics: true
   interval: 300       # scrape interval in seconds
-  workers: 4          # parallel shards for federated requests
+  workers: 4          # parallel shards for federated requests, if MCOA is enabled it will be ignored
 ```
  
 
