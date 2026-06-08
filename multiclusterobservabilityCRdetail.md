@@ -54,8 +54,9 @@ capabilities:
 
 ## 3. Observability Addon Global Settings (`observabilityAddonSpec`)
  
-Configures the data collection agents on all managed clusters.
-**Note:** 
+Configures the data collection agents on all managed clusters
+
+> **Note:** 
 Everything that is in observabilityAddonSpec only applies to the legacy version.
 ```yaml
 observabilityAddonSpec:
