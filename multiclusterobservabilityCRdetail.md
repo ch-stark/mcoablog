@@ -40,6 +40,8 @@ capabilities:
     metrics:
       default:
         enabled: true
+      ui:
+        enabled: true 
     analytics:
       namespaceRightSizingRecommendation:
         enabled: true
