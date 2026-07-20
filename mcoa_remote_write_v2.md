@@ -7,13 +7,7 @@ MCOA remote write capabilities operate independently from the in-cluster Prometh
 - **Federation**: The MCOA Prometheus Agent uses pull-based HTTP federation (`/federate`) to collect metrics from the local in-cluster Prometheus.
 - **Storage & Transmission**: The agent buffers scraped metrics into its own Write-Ahead Log (WAL) and initiates an outbound Remote Write 2.0 stream directly to the Hub.
 - **Compatibility**: Managed clusters on older OpenShift versions without native Remote Write 2.0 support can still stream metrics using Remote Write 2.0, as long as MCOA is enabled.
-## Performance Tuning (`queueConfig`)
- 
-You can customize the `spec.remoteWrite[].queueConfig` block within the `PrometheusAgent` custom resource to optimize throughput, memory usage, and delivery speed:
- 
-- **Concurrency** (`minShards`, `maxShards`): Defines the number of parallel threads sending metrics. Raising `maxShards` helps resolve backlogs caused by high network latency, though it increases CPU and connection usage.
-- **Payload Size** (`maxSamplesPerSend`, `capacity`): Increasing samples per request reduces HTTP header overhead and improves bandwidth efficiency. `capacity` provides a memory buffer per shard to absorb ingestion spikes.
-- **Delivery Latency** (`batchSendDeadline`): Sets the max buffer wait time. Lower values speed up dashboard updates, while higher values maximize data compression.
+
 ## Monitoring & Alerts
  
 - **Hub-Side Verification**: Query `acm_remote_write_requests_total` on the Hub to confirm inbound HTTP 2xx success statuses.
