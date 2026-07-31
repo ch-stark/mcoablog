@@ -15,7 +15,7 @@ MCOA’s move to a standard **PrometheusAgent** makes a better pattern practical
 
 ## What changes with MCOA collection
 
-MCOA reworks spoke metrics collection by replacing the legacy **custom metrics-collector** with the upstream **PrometheusAgent**, configured through standard APIs (`PrometheusAgent`, `ScrapeConfig`, `PrometheusRule`) in the `open-cluster-management-observability` namespace.
+MCOA reworks spoke metrics collection by replacing the legacy **custom metrics-collector** with the upstream **PrometheusAgent**, configured through standard APIs (`PrometheusAgent`, `ScrapeConfig`, `PrometheusRule`).
 
 (The legacy **endpoint-operator** path that deployed the old collector is deprecated in favor of this model; do not conflate “collector replacement” with every spoke operator concern.)
 
