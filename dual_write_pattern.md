@@ -3,7 +3,6 @@
 **Audience:** Platform architects and SREs running multi-hub RHACM with an enterprise metrics store (for example Grafana Enterprise Metrics or a central Thanos).  
 **Applies to:** MultiCluster Observability Addon (MCOA) metrics collection using PrometheusAgent (RHACM 2.15+; confirm API group and defaults for your release).
 
----
 
 Managing observability across multiple ACM hubs often creates two problems: **duplicate collectors on the spoke**, and **broken historical continuity** when a managed cluster moves from one regional hub to another.
 
@@ -13,7 +12,6 @@ MCOA’s move to a standard **PrometheusAgent** makes a better pattern practical
 
 > **Important:** Dual-write is a **reference architecture** enabled by PrometheusAgent’s native multi-`remoteWrite` support. It is not a separate branded MCOA product feature. The default MCOA path still remote-writes to the ACM hub; enterprise destinations are an intentional extension you design and operate.
 
----
 
 ## What changes with MCOA collection
 
@@ -39,8 +37,6 @@ Typical split:
 | **2 – Enterprise SoT** | GEM or central Thanos | Fuller granularity, long retention, global dashboards |
 
 You still send **two network streams**. What you eliminate is a **second collector stack** on the edge—not necessarily duplicate samples—unless relabeling makes the payloads complementary rather than identical.
-
----
 
 ## Three outcomes (and their limits)
 
@@ -74,7 +70,6 @@ The PrometheusAgent buffers scraped samples in a local Write-Ahead Log (WAL) and
 - WAL on **ephemeral storage** (`emptyDir`) can be **lost on pod restart**.
 - **Planned hub failover / detach** that terminates the Agent can still create metrics gaps on paths that depend on that Agent lifecycle. Persistent WAL and softer detach behavior are operational concerns (and active product improvement areas)—dual-write to GEM reduces impact on *enterprise* history; it does not by itself deliver zero-gap ACM DR.
 
----
 
 ## Configuration sketch
 
@@ -132,8 +127,6 @@ spec:
 - [ ] WAL / PVC strategy understood for Agent restarts and DR drills  
 - [ ] Failure test: GEM down, hub down, Agent restart, spoke hub move  
 
----
-
 ## When to use this pattern
 
 | Use dual-write when… | Prefer another approach when… |
@@ -145,7 +138,6 @@ spec:
 
 Related direction for **Global Hub** visibility over object storage (Query + Store Gateway, delayed historical read) is complementary: dual-write optimizes *ingest* identity and edge cost; Store Gateway patterns optimize *query* of durable blocks. They solve different layers.
 
----
 
 ## Bottom line
 
@@ -158,7 +150,6 @@ With MCOA’s PrometheusAgent, platform teams can draw a clean boundary:
 
 The result is a **leaner edge** (one agent), **intentional** (not accidental) duplication of streams, and **continuity in the SoT** across hub moves—within the real limits of WAL persistence, Agent lifecycle, and how you manage configuration under MCOA.
 
----
 
 ## Next steps
 
