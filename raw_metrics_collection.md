@@ -1,118 +1,77 @@
-# Keep the 15-second view: raw metrics collection with ACM (not yet part of release)
+# Keep the 15-second view: raw metrics collection with ACM
 
-Fleet metrics that only land every five minutes hide the thing you are paging on. A CPU throttle, a network micro-burst, a brief `up` flap — gone in the downsample.
+Fleet dashboards that only update every five minutes hide the signal you need during an incident. A CPU throttle, a network micro-burst, or a brief `up` flap never lands in the downsample.
 
-Red Hat Advanced Cluster Management (ACM) Observability has always optimized for fleet scale: the MultiCluster Observability Addon (MCOA) federates from each managed-cluster Prometheus and sends a compact view to the hub. That is the right default. It is the wrong tool when you need the sample the local Prometheus actually scraped.
+**Summary:** Red Hat Advanced Cluster Management for Kubernetes (ACM) Observability collects metrics from managed clusters with the multicluster observability add-on (MCOA). The default path is Prometheus federation, downsampled to five minutes. That default is the right choice for fleet scale. When you need the sample that local Prometheus actually scraped, opt a hub `ScrapeConfig` into **raw** collection. The platform or user-workload Prometheus on the managed cluster then remote-writes those series to the hub at native scrape resolution. Federation stays in place for everything else.
 
-Raw metrics collection gives you that sample — without a new custom resource, and without turning every series in the fleet into high-resolution traffic.
+> **Important:** Collecting raw metrics with the multicluster observability add-on is a Technology Preview feature. Technology Preview features are not supported with Red Hat production service level agreements (SLAs), might not be functionally complete, and Red Hat does not recommend using them in production.
 
-## The problem federation creates at high resolution
+## When federation is the wrong tool
 
-MCOA’s PrometheusAgent scrapes the local Prometheus `/federate` endpoint and forwards what it gets. For most operators that is enough. The default resolution is five minutes.
+MCOA collects custom metrics with the Prometheus federation API by default. That path is efficient at fleet scale and is a good fit for overview dashboards.
 
-Raise the resolution by shrinking the federation window and three things go wrong:
+It is a poor fit when you need samples **more often than about 90 seconds**:
 
-- The source Prometheus spends more CPU answering federate queries and can miss the window.
-- You still lose fidelity relative to the native scrape.
-- If native resolution is finer than the federation interval, you ship duplicates and out-of-order samples into Thanos Receive.
+- Frequent federation scrapes use more CPU on the source Prometheus.
+- You still lose fidelity compared with the native scrape.
+- If the native scrape is coarser than the federation interval (for example, a two-minute scrape federated more often), you can ship duplicate samples into Thanos Receive.
 
 You asked Prometheus to do more work and still did not get the raw series.
 
-## The solution: annotate, don’t rebuild the stack
+## What raw collection changes
 
-Raw collection is opt-in per `ScrapeConfig` on the hub. Add:
+Raw collection is opt-in **per `ScrapeConfig`** on the hub cluster. You do not replace MCOA, and you do not send the entire fleet at high resolution.
 
-```yaml
-observability.open-cluster-management.io/resolution-strategy: "raw"
+Set the resolution strategy to `raw` on the configs that matter:
+
+```bash
+oc annotate scrapeconfig <scrape-config-name> \
+  -n open-cluster-management-observability \
+  observability.open-cluster-management.io/resolution-strategy=raw
 ```
 
-MCOA then **bypasses federation for that config** and remote-writes those series from the managed-cluster Prometheus to the hub Observatorium API.
+You can also create a dedicated `ScrapeConfig` with the same annotation. The example in the next section shows that path.
 
-Federation stays in place for everything else. One pipeline for the fleet overview. One pipeline for the series you actually need at native resolution.
+What happens next:
+
+1. That config leaves the MCOA federation path.
+2. On the managed cluster, the metric selectors become Prometheus `remoteWrite` configuration for Cluster Monitoring Operator (CMO) platform or user-workload Prometheus.
+3. Series arrive on the hub at native scrape resolution.
+4. Query them in Grafana on **Observatorium-Dynamic** (30-second step). The five-minute Observatorium datasource does not show the raw path.
+
+Every other `ScrapeConfig` without the annotation stays on the federated, downsampled path.
 
 ```mermaid
 flowchart LR
-  subgraph spoke [Managed cluster]
-    Prom[Spoke Prometheus]
-    Agent[PrometheusAgent]
+  subgraph managed [Managed cluster]
+    Prom[Prometheus]
+    Agent[MCOA federation]
     Prom -->|"federate (default)"| Agent
     Prom -->|"remote_write (raw)"| HubRW[Hub Observatorium API]
   end
-  subgraph hub [Hub]
+  subgraph hub [Hub cluster]
     Agent -->|downsampled samples| Receive[Thanos Receive]
     HubRW --> Receive
   end
 ```
 
-### How it works
-
-1. You keep using the same platform or user-workload `ScrapeConfig` labels you already use for MCOA.
-2. The addon-manager retargets annotated configs (the component label gets a `-raw` suffix) so the PrometheusAgent **stops federating them**.
-3. On the spoke, the endpoint operator turns `match[]` selectors into `writeRelabelConfigs` and patches remote-write onto Cluster Monitoring Operator (CMO) config — or, later, a Cluster Observability Operator (COO) `MonitoringStack`.
-4. Grafana’s **Observatorium-Dynamic** datasource (30-second step) is the one to query. The legacy interval on `observabilityAddonSpec` does not apply to this path.
-
-### Example ScrapeConfig
-
-Target an existing platform or user-workload collector config, then annotate it:
-
-```yaml
-apiVersion: monitoring.rhobs/v1alpha1
-kind: ScrapeConfig
-metadata:
-  name: platform-raw-metrics
-  namespace: open-cluster-management-observability
-  labels:
-    app.kubernetes.io/component: platform-metrics-collector
-  annotations:
-    observability.open-cluster-management.io/resolution-strategy: "raw"
-spec:
-  params:
-    match[]:
-      - 'up{job=~"api.*"}'
-      - 'container_memory_cache{container!="POD"}'
-```
-
-Use `app.kubernetes.io/component: user-workload-metrics-collector` for user-workload series.
-
-To send those series to a COO stack instead of the default CMO user-workload Prometheus:
-
-```yaml
-metadata:
-  annotations:
-    observability.open-cluster-management.io/resolution-strategy: "raw"
-    observability.open-cluster-management.io/coo-monitoring-stacks: "my-monitoring-ns/my-monitoring-stack"
-```
-
-## Why this matters
-
-| You get | Because |
-| --- | --- |
-| Diagnosis of short-lived events | Samples arrive at native Prometheus resolution, not a 5-minute federate window. |
-| Less load on spoke Prometheus | Federate is taken off the hot path for those series; remote-write is the scrape the server already did. |
-| Selective cost | Only annotated `ScrapeConfig`s go raw. The rest of the fleet stays downsampled. |
-| No new CRD | Activation is one annotation on an object operators already GitOps. |
-
-That last point is the product choice: a dual pipeline, not a second control plane.
-
 ## What to plan for
 
-**High-availability Prometheus doubles the write volume.** Each replica remote-writes with a `prometheus_replica` external label. Thanos Query and Compact on the hub deduplicate, but Receivers still see both streams. Size Thanos Receive — t-shirt sizes or per-component replicas on the `MultiClusterObservability` CR — before you annotate high-cardinality jobs.
+Native resolution produces more data points than five-minute federation. Plan for that before you widen what you collect.
 
-**Spoke Prometheus may need more CPU and memory.** Remote-write is extra work on the source.
+- **Network and Receive.** Expect more bandwidth between managed clusters and the hub, and more CPU and memory on Thanos Receive.
+- **High-availability Prometheus doubles ingest.** Two in-cluster Prometheus replicas each stream an independent copy. Thanos Compactor later drops the redundant samples from long-term object storage, but Receive still processes both streams. Size Receive before you enable raw collection on high-cardinality jobs.
+- **Storage.** Higher ingest needs more hub write-ahead log (WAL) and receiver block buffer, and more object storage for the raw-resolution blocks.
+- **Managed-cluster Prometheus load.** Remote-write is extra work on the source.
+- **The right Grafana datasource.** If dashboards still use the five-minute Observatorium source, raw series look as if they never arrived. Use Observatorium-Dynamic.
 
-**COO targeting is limited today.** The supported path is CMO platform and user-workload config. If you point a raw `ScrapeConfig` at a Cluster Observability Operator `MonitoringStack`, MCOA remote-write entries can overwrite existing `remoteWrite` lists on that stack.
+## Try it on one diagnostic config
 
-**Query the Dynamic datasource.** If dashboards still use the 5-minute Observatorium source, raw series will look like they never arrived.
+You need cluster-administrator access and MCOA enabled. For user-workload series, enable user-workload monitoring on the managed clusters.
 
-## Try it
+Do not annotate the default platform allowlist the first time you enable raw collection. That allowlist is a large set of fleet metrics. If you switch it to raw, every series in it starts remote-writing at native scrape resolution.
 
-Do not flip the whole fleet to raw on day one. Start with **one narrow `ScrapeConfig`**, prove the pipeline, then widen.
-
-### 1. Pick one diagnostic config — not the full allowlist
-
-The default MCOA platform allowlist is a large set of fleet metrics (nodes, kube-state, API server, and so on). If you annotate *that* config, every series in it starts remote-writing at native scrape resolution. That is the fastest way to surprise Thanos Receive with cardinality and network.
-
-Instead, create a **small extra** `ScrapeConfig` whose `match[]` list is only the series you need for a real incident, for example API server health:
+Start with a **small extra** `ScrapeConfig` whose `match[]` list is only the series you need. This example collects API server health:
 
 ```yaml
 apiVersion: monitoring.rhobs/v1alpha1
@@ -130,28 +89,16 @@ spec:
       - 'up{job="apiserver"}'
 ```
 
-Keep `app.kubernetes.io/component: platform-metrics-collector` (or `user-workload-metrics-collector`) so MCOA still owns the object. The annotation is what switches **this** config off federation and onto remote-write. Every other `ScrapeConfig` without the annotation stays on the 5-minute federate path.
+Keep `app.kubernetes.io/component: platform-metrics-collector` (or `user-workload-metrics-collector`) so MCOA still owns the object. The annotation is what switches **this** config onto remote-write.
 
-### 2. Confirm series on Observatorium-Dynamic
-
-Raw samples do **not** show up on the default Grafana **Observatorium** datasource. That source steps at the old collector interval (typically 5 minutes). Use **Observatorium-Dynamic** (30-second step).
-
-In Explore, select Observatorium-Dynamic and run something as simple as:
+Then verify on Observatorium-Dynamic:
 
 ```promql
 up{job="apiserver"}
 ```
 
-You should see points at native scrape cadence (often 15–30s on the spoke), with the usual ACM `cluster` / `clusterID` labels. If the query is empty on Dynamic but populated on the 5-minute source, you are looking at the federated copy, not the raw path.
+You should see points at native scrape cadence (often 15 to 30 seconds on the managed cluster), with the usual ACM `cluster` and `clusterID` labels. If the query is empty on Dynamic but populated on the five-minute source, you are looking at the federated copy.
 
-### 3. Watch Receive CPU and network before you expand the matchers
+Watch Thanos Receive CPU, memory, and ingest, plus managed-cluster Prometheus remote-write queues, for a few scrape cycles. High-availability replicas double the volume. If that looks healthy, add matchers or a second `ScrapeConfig`. Do not start by collecting every series, and do not switch the full platform allowlist to raw until Receive and the network are sized for it.
 
-Remote-write hits Thanos Receive on the hub and the spoke Prometheus that is doing the write. After the annotation is live, watch for a few scrape cycles:
-
-- Hub: Thanos Receive CPU, memory, and ingest rate (`thanos_receive_*` / receive pod metrics).
-- Hub: network bytes in on the Observatorium API / Receive path.
-- Spoke: Prometheus CPU and WAL/remote-write queue if you have HA replicas (`prometheus_replica` doubles the volume).
-
-If Receive is calm and the Dynamic query looks right, **then** add more matchers (`container_cpu_cfs_throttled_seconds_total`, a specific namespace, and so on) or a second `ScrapeConfig`. Do not start from `{__name__=~".+"}` or the full platform allowlist.
-
-For the surrounding MCOA metrics workflow, see [Adding custom metrics with MCOA](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#add-custom-metrics-mcoa) in the ACM Observability documentation.
+To enable MCOA first, see [Enabling the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#enable-mcoa). For the existing custom-metrics workflow, see [Adding custom metrics with MCOA](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#add-custom-metrics-mcoa).
