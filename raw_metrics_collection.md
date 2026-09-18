@@ -1,4 +1,4 @@
-# Keep the 15-second view: raw metrics collection with ACM
+# Keep the 15-second view: raw metrics collection with ACM (TP in ACM 5.0)
 
 Fleet dashboards that only update every five minutes hide the signal you need during an incident. A CPU throttle, a network micro-burst, or a brief `up` flap never lands in the downsample.
 
