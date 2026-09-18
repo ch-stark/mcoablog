@@ -6,18 +6,21 @@
 
 A custom metric that exists only because someone ran `oc apply` on the hub will disappear the next time that person is on leave. MCOA is built around Kubernetes APIs (`ScrapeConfig`, `PrometheusRule`). Those objects belong in Git, the same way you already store other hub config.
 
-This post is the GitOps path for [MCOA core and configuration](mcoa-core-and-configuration-draft5.0.md). You author a `ScrapeConfig` in a repo and sync it to the hub. The MCOA controller watches labeled objects in `open-cluster-management-observability` and registers them on the `ClusterManagementAddOn`. The addon then ships them to managed clusters.
+This post is the GitOps path for [MCOA core and configuration](mcoa-core-and-configuration-draft5.0.md). You author a `ScrapeConfig` (or `PrometheusRule`) in a repo and sync it to the hub. The MCOA controller auto-discovers those objects from labels plus a **placement annotation**, then registers them on the `ClusterManagementAddOn`. The addon ships them to managed clusters.
 
 You do not patch the `ClusterManagementAddOn`. The controller owns that list.
 
 ## Why Git, not a one-off apply
 
-Each extra federation job is a `ScrapeConfig` in `open-cluster-management-observability`. Label it so the controller knows which collector it belongs to:
+Each extra federation job is a `ScrapeConfig` in `open-cluster-management-observability`. The controller picks it up when **all** of the following are set:
 
-- `app.kubernetes.io/component: platform-metrics-collector`
-- `app.kubernetes.io/component: user-workload-metrics-collector`
+- `app.kubernetes.io/part-of: multicluster-observability-addon`
+- `app.kubernetes.io/component: platform-metrics-collector` **or** `user-workload-metrics-collector`
+- Annotation `observability.open-cluster-management.io/placements` listing `namespace/placement` pairs (comma-separated). Use an annotation, not a label: placement names plus namespaces can exceed the 63-character label limit.
 
-The controller adds those names to the hub `ClusterManagementAddOn` (CMA). The addon manager then copies them into a `ManifestWork` per placement.
+Example: `observability.open-cluster-management.io/placements: "open-cluster-management-global-set/global"`
+
+The controller adds those names to the hub `ClusterManagementAddOn` (CMA). The addon manager then copies them into a `ManifestWork` per placement. Remove the annotation, set it to `none`, or delete the object and the controller drops the CMA entry (user-defined objects only; defaults stay under addon ownership).
 
 That split is useful:
 
@@ -42,7 +45,7 @@ mcoa-metrics/
 
 ## 1. Commit the `ScrapeConfig`
 
-Keep it in `open-cluster-management-observability`. Set `app.kubernetes.io/component` as above. Required fields: `jobName`, `metricsPath: /federate`, `params.match[]`.
+Keep it in `open-cluster-management-observability`. Set the `part-of` and collector labels, plus the placements annotation. Required spec fields: `jobName`, `metricsPath: /federate`, `params.match[]`.
 
 ```yaml
 # scrapeconfigs/platform-custom-apiserver-up.yaml
@@ -52,7 +55,10 @@ metadata:
   name: platform-custom-apiserver-up
   namespace: open-cluster-management-observability
   labels:
+    app.kubernetes.io/part-of: multicluster-observability-addon
     app.kubernetes.io/component: platform-metrics-collector
+  annotations:
+    observability.open-cluster-management.io/placements: "open-cluster-management-global-set/global"
 spec:
   jobName: platform-custom-apiserver-up
   metricsPath: /federate
@@ -128,7 +134,8 @@ Query Perses for `up{job="apiserver"}` and expect `cluster` / `clusterID`. If th
 
 | Mistake | What you see | Fix |
 | :--- | :--- | :--- |
-| Wrong `app.kubernetes.io/component` | Object exists, controller ignores it | `platform-metrics-collector` or `user-workload-metrics-collector` |
+| Wrong collector or missing `part-of` label | Object exists, controller ignores it | `part-of: multicluster-observability-addon` plus `platform-metrics-collector` or `user-workload-metrics-collector` |
+| Missing placements annotation | Object exists, never appears on the CMA | `observability.open-cluster-management.io/placements: "namespace/placement"` |
 | GitOps prune of default scrape configs | Default dashboards empty | Separate Application; `prune: false`; never list MCOA defaults in your overlay |
 | Full CMA replace from Git | Defaults gone, Agents mismatched | Leave the CMA to the controller |
 | User-workload config, UWM off | Empty federation | Enable UWM on the spoke and on the MCO CR |

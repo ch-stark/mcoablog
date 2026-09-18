@@ -195,7 +195,7 @@ spec:
       - '{__name__="up"}'
 ```
 
-Creating the object is enough when it has the collector label (`platform-metrics-collector` or `user-workload-metrics-collector`) in `open-cluster-management-observability`. The MCOA controller registers it on the `ClusterManagementAddOn`. You do not patch the CMA by hand.
+Creating the object is enough when it has `app.kubernetes.io/part-of: multicluster-observability-addon`, a collector label (`platform-metrics-collector` or `user-workload-metrics-collector`), and the placements annotation `observability.open-cluster-management.io/placements`. The MCOA controller registers it on the `ClusterManagementAddOn`. You do not patch the CMA by hand.
 
 Independent `ScrapeConfig` objects are how MCOA **shards** federation: several smaller pulls instead of one huge allowlist. That is the main scalability change from the legacy collector.
 
