@@ -140,7 +140,7 @@ Default platform scrape configs that MCOA generates include:
 
 One `PrometheusAgent` is created **per placement**. Default `ScrapeConfig` and `PrometheusRule` objects are **shared** across placements unless you add your own.
 
-Do not replace this object from Git with a stub that only lists your custom config. You will drop the defaults and break the default dashboards. Patch the `configs` list. See [Add a ScrapeConfig via Git](add-scrape-config-via-git-draft5.0.md).
+Do not replace this object from Git with a stub that only lists your custom config. You will drop the defaults and break the default dashboards. Leave the CMA to the MCOA controller. See [Add a ScrapeConfig via Git](add-scrape-config-via-git-draft5.0.md).
 
 ### 2. `PrometheusAgent` — how the collector runs
 
@@ -195,7 +195,7 @@ spec:
       - '{__name__="up"}'
 ```
 
-Creating the object is not enough. Reference it on the `ClusterManagementAddOn` placement **after** it exists. If you reference it first, the add-on sits in `Deploying`.
+Creating the object is enough when it has the collector label (`platform-metrics-collector` or `user-workload-metrics-collector`) in `open-cluster-management-observability`. The MCOA controller registers it on the `ClusterManagementAddOn`. You do not patch the CMA by hand.
 
 Independent `ScrapeConfig` objects are how MCOA **shards** federation: several smaller pulls instead of one huge allowlist. That is the main scalability change from the legacy collector.
 
@@ -225,20 +225,20 @@ Those close the gap between “pod is Running” and “the hub is actually inge
 
 | You configure | The addon manager enforces |
 | :--- | :--- |
-| Extra `ScrapeConfig` matchers (and CMA references) | Hub remote-write URL and TLS |
+| Extra `ScrapeConfig` matchers (labeled for the controller) | Hub remote-write URL and TLS |
 | `PrometheusRule` recording rules | Default platform scrape set for the included dashboards |
 | `scrapeInterval`, `queueConfig`, resources | Reverting deletion of the `acm-observability` remote-write |
 | `writeRelabelConfigs` / `metricRelabelings` | Placement-based rollout of named configs |
 | Extra remote-write targets (enterprise store) | — |
 
-Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Command Line Tools** in the Fleet Management console. Apply the generated `ScrapeConfig` and `PrometheusRule`, then patch them onto the `ClusterManagementAddOn`.
+Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Command Line Tools** in the Fleet Management console. Apply the generated `ScrapeConfig` and `PrometheusRule`. The controller registers them on the `ClusterManagementAddOn`.
 
 ## Try it
 
 1. Enable platform metrics (and user-workload if you need them) on the MCO CR.
 2. Confirm Agents and CMA placements exist.
 3. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
-4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Register it on the CMA. Confirm a `ManifestWork` on the spoke and the series on the hub.
+4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Confirm a `ManifestWork` on the spoke and the series on the hub.
 
 Related drafts in this repo:
 

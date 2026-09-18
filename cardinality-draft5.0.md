@@ -62,7 +62,7 @@ spec:
         - uri
 ```
 
-Register the object on the `ClusterManagementAddOn` like any other custom scrape job.
+The MCOA controller registers the object on the `ClusterManagementAddOn` from that label. You do not patch the CMA.
 
 Use `writeRelabelConfigs` on the `PrometheusAgent` remote-write when you still want the series **on the spoke** (local dashboards) but not on the hub. That is destination filtering, not a WAL saving.
 
@@ -98,7 +98,7 @@ spec:
       - '{__name__="container_memory_rss:sum"}'
 ```
 
-Add both objects to the CMA (`scrapeconfigs` in group `monitoring.rhobs`, `prometheusrules` in group `monitoring.coreos.com`). Optional annotation `observability.open-cluster-management.io/target-namespace` pins a rule to a workload namespace.
+The controller registers both objects on the CMA from their labels (`scrapeconfigs` in group `monitoring.rhobs`, `prometheusrules` in group `monitoring.coreos.com`). Optional annotation `observability.open-cluster-management.io/target-namespace` pins a rule to a workload namespace.
 
 This is the same idea product docs describe when they tell you to use `PrometheusRule` to limit cardinality of collected metrics.
 

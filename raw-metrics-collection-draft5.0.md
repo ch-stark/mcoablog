@@ -97,7 +97,7 @@ spec:
       - 'up{job="apiserver"}'
 ```
 
-Keep `app.kubernetes.io/component: platform-metrics-collector` (or `user-workload-metrics-collector`) so MCOA still owns the object. The annotation is what switches **this** config onto remote-write. Register the name on the `ClusterManagementAddOn` the same way as any custom scrape job.
+Keep `app.kubernetes.io/component: platform-metrics-collector` (or `user-workload-metrics-collector`) so the MCOA controller still owns the object. The annotation is what switches **this** config onto remote-write.
 
 Then verify in Perses at a 30-second step:
 

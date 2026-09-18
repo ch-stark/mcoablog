@@ -4,25 +4,30 @@
 **Applies to:** MultiCluster Observability Addon (MCOA) custom metrics in ACM 5.0.  
 **Status:** Draft 5.0
 
-A custom metric that exists only because someone ran `oc apply` on the hub will disappear the next time that person is on leave. MCOA is built around Kubernetes APIs (`ScrapeConfig`, `PrometheusRule`, `ClusterManagementAddOn`). Those objects belong in Git, the same way you already store `Placement` and other hub config.
+A custom metric that exists only because someone ran `oc apply` on the hub will disappear the next time that person is on leave. MCOA is built around Kubernetes APIs (`ScrapeConfig`, `PrometheusRule`). Those objects belong in Git, the same way you already store other hub config.
 
-This post is the GitOps path for [MCOA core and configuration](mcoa-core-and-configuration-draft5.0.md). You author a `ScrapeConfig` in a repo, sync it to the hub, then **register** it on the addon so MCOA ships it to managed clusters.
+This post is the GitOps path for [MCOA core and configuration](mcoa-core-and-configuration-draft5.0.md). You author a `ScrapeConfig` in a repo and sync it to the hub. The MCOA controller watches labeled objects in `open-cluster-management-observability` and registers them on the `ClusterManagementAddOn`. The addon then ships them to managed clusters.
 
-Creating the CR is not the rollout. The `ClusterManagementAddOn` reference is.
+You do not patch the `ClusterManagementAddOn`. The controller owns that list.
 
 ## Why Git, not a one-off apply
 
-MCOA custom metrics are not a ConfigMap snippet anymore. Each extra federation job is a `ScrapeConfig` in `open-cluster-management-observability`. The addon manager copies **named** configs from the hub `ClusterManagementAddOn` (CMA) into a `ManifestWork` per placement.
+Each extra federation job is a `ScrapeConfig` in `open-cluster-management-observability`. Label it so the controller knows which collector it belongs to:
+
+- `app.kubernetes.io/component: platform-metrics-collector`
+- `app.kubernetes.io/component: user-workload-metrics-collector`
+
+The controller adds those names to the hub `ClusterManagementAddOn` (CMA). The addon manager then copies them into a `ManifestWork` per placement.
 
 That split is useful:
 
 - Git holds the metric selectors you actually want (`match[]`, relabeling).
-- The CMA says **which placements** receive that job.
-- Spokes never get a scrape job that is not in Git and not in the CMA.
+- The controller keeps the CMA in sync with those objects.
+- Spokes receive scrape jobs that exist in Git and that the controller has registered.
 
-Review, revert, and promotion then look like every other ACM config: pull request, sync, placement.
+Review, revert, and promotion then look like every other ACM config: pull request, sync.
 
-Do **not** GitOps-replace the entire `multicluster-observability-addon` CMA with a file that only lists your custom config. MCOA already registered default `PrometheusAgent` and platform `ScrapeConfig` names. A full replace drops them and breaks the default dashboards.
+Do **not** GitOps-replace the entire `multicluster-observability-addon` CMA. The controller and the addon already write default `PrometheusAgent` and platform `ScrapeConfig` names there. A full replace drops them and breaks the default dashboards.
 
 ## Repo layout
 
@@ -31,16 +36,13 @@ mcoa-metrics/
   scrapeconfigs/
     kustomization.yaml
     platform-custom-apiserver-up.yaml
-  cma/
-    README.md                 # how to patch, not a full CMA
-    cma-scrapeconfig-patch.json
   gitops/
     application.yaml
 ```
 
 ## 1. Commit the `ScrapeConfig`
 
-Keep it in `open-cluster-management-observability`. Set `app.kubernetes.io/component` to `platform-metrics-collector` or `user-workload-metrics-collector`. Required fields: `jobName`, `metricsPath: /federate`, `params.match[]`.
+Keep it in `open-cluster-management-observability`. Set `app.kubernetes.io/component` as above. Required fields: `jobName`, `metricsPath: /federate`, `params.match[]`.
 
 ```yaml
 # scrapeconfigs/platform-custom-apiserver-up.yaml
@@ -102,67 +104,15 @@ spec:
 
 Leave `prune: false` until you are sure Git is the only writer of these objects. MCOA-generated defaults should **not** live in this Application.
 
-## 3. Register the config on the CMA
+After sync, the controller registers the new `ScrapeConfig` on the CMA. You do not add a JSON patch or edit the CMA by hand.
 
-Reference the object **after** GitOps has created it. If the name is missing, the add-on status stays `Deploying`.
-
-Store the patch in Git. Apply it from CI (or a one-line Job) so humans are not editing the live CMA:
-
-```json
-[
-  {
-    "op": "add",
-    "path": "/spec/installStrategy/placements/0/configs/-",
-    "value": {
-      "group": "monitoring.rhobs",
-      "resource": "scrapeconfigs",
-      "name": "platform-custom-apiserver-up",
-      "namespace": "open-cluster-management-observability"
-    }
-  }
-]
-```
-
-```bash
-oc patch clustermanagementaddon multicluster-observability-addon \
-  --type=json \
-  --patch-file=cma/cma-scrapeconfig-patch.json
-```
-
-`placements/0` is the first placement (often `global`). Confirm the index before you patch:
-
-```bash
-oc get cma multicluster-observability-addon -o yaml | yq '.spec.installStrategy.placements'
-```
-
-If you maintain several placements (prod vs. edge), add the same config entry only where you want that job.
-
-Equivalent YAML on the CMA (fragment, not a full object):
-
-```yaml
-spec:
-  installStrategy:
-    type: Placements
-    placements:
-      - name: global
-        namespace: open-cluster-management-global-set
-        configs:
-          # defaults already present — do not delete them
-          - group: monitoring.rhobs
-            resource: scrapeconfigs
-            name: platform-custom-apiserver-up
-            namespace: open-cluster-management-observability
-```
-
-API group for MCOA scrape configs in the CMA is `monitoring.rhobs`. Recording rules use `monitoring.coreos.com` / `prometheusrules`.
-
-## 4. Verify hub, ManifestWork, spoke
+## 3. Verify hub, ManifestWork, spoke
 
 ```bash
 # Hub object from Git
 oc get scrapeconfig platform-custom-apiserver-up -n open-cluster-management-observability
 
-# CMA lists it
+# Controller registered it on the CMA
 oc get cma multicluster-observability-addon -o yaml | grep platform-custom-apiserver-up
 
 # Spoke rollout
@@ -178,21 +128,20 @@ Query Perses for `up{job="apiserver"}` and expect `cluster` / `clusterID`. If th
 
 | Mistake | What you see | Fix |
 | :--- | :--- | :--- |
-| CMA reference before the CR exists | Add-on `Deploying` | Sync the `ScrapeConfig` first, then patch the CMA |
+| Wrong `app.kubernetes.io/component` | Object exists, controller ignores it | `platform-metrics-collector` or `user-workload-metrics-collector` |
 | GitOps prune of default scrape configs | Default dashboards empty | Separate Application; `prune: false`; never list MCOA defaults in your overlay |
-| Full CMA replace from Git | Defaults gone, Agents mismatched | Patch `configs/-` only |
-| Wrong `app.kubernetes.io/component` | Object exists, Agent ignores it | `platform-metrics-collector` or `user-workload-metrics-collector` |
+| Full CMA replace from Git | Defaults gone, Agents mismatched | Leave the CMA to the controller |
 | User-workload config, UWM off | Empty federation | Enable UWM on the spoke and on the MCO CR |
 | Wide `match[]` | Receive CPU and storage climb | Narrow matchers; pre-aggregate with `PrometheusRule` |
 
 ## Try it
 
 1. Enable MCOA ([core post](mcoa-core-and-configuration-draft5.0.md)).
-2. Commit one small `ScrapeConfig`. Sync it. Patch the CMA.
-3. Confirm `ManifestWork` and the series in Perses.
+2. Commit one small `ScrapeConfig` with the collector label. Sync it.
+3. Confirm the CMA lists the name, a `ManifestWork` exists, and the series shows in Perses.
 4. Only then add more matchers or a second file.
 
-If you still have a legacy `observability-metrics-custom-allowlist`, convert it with the `allowlist-migration` CLI (Fleet Management console, **Help > Command Line Tools**), commit the generated YAML, and register those names the same way.
+If you still have a legacy `observability-metrics-custom-allowlist`, convert it with the `allowlist-migration` CLI (Fleet Management console, **Help > Command Line Tools**), commit the generated YAML, and let the controller register those objects the same way.
 
 Product docs:
 
