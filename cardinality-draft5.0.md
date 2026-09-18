@@ -1,17 +1,17 @@
 # Cardinality: see fleet series growth without taking the hub down
 
 **Audience:** Platform engineers and SREs who own ACM Observability cost and hub stability.  
-**Applies to:** MultiCluster Observability Addon (MCOA) collection plus cardinality dashboards (dashboards: ACM 2.15 development preview; confirm status for your release).  
+**Applies to:** MultiCluster Observability Addon (MCOA) collection plus cardinality dashboards in ACM 5.0. Perses dashboards are generally available.  
 **Status:** Draft 5.0
 
-Cardinality is not a Grafana problem. It is the number of unique time series you agreed to store. On a fleet, that number is (metrics) × (labels) × (clusters). One extra label with a request ID, times a few hundred clusters, is enough to make Thanos Receive and the query path expensive.
+Cardinality is not a dashboard problem. It is the number of unique time series you agreed to store. On a fleet, that number is (metrics) × (labels) × (clusters). One extra label with a request ID, times a few hundred clusters, is enough to make Thanos Receive and the query path expensive.
 
 MCOA gives you two levers that the legacy allowlist did not:
 
 1. **Stop shipping the explosion** — narrow `ScrapeConfig` matchers, drop labels at scrape time, record aggregates on the spoke.
 2. **See who is exploding** — cardinality dashboards that read **pre-computed** series, not a live `count({__name__=~".+"})` across the fleet.
 
-This post covers both. Collection control is GA MCOA configuration. The sharded cardinality dashboards are the preview path for visibility.
+This post covers both. Collection control is MCOA configuration. Cardinality views in Perses read the pre-computed series.
 
 ## Why a live cardinality query hurts
 
@@ -138,9 +138,9 @@ You need ACM Observability running and permission to edit `open-cluster-manageme
 
 If `thanos-ruler-custom-rules` already holds other custom rules, **merge** the generated groups. Replacing the whole ConfigMap drops those rules.
 
-Thanos Ruler reloads on its own. After the first 30-minute run, the dashboards start to fill.
+Thanos Ruler reloads on its own. After the first 30-minute run, the cardinality dashboards in Perses start to fill.
 
-Treat this dashboard path as **development preview** unless your release notes say otherwise. Try it on a non-production hub first. Compare ruler CPU and memory around the 30-minute mark with and without sharding.
+Try the sharded rules on a non-production hub first. Compare ruler CPU and memory around the 30-minute mark with and without sharding.
 
 What you should see after the first interval:
 
@@ -162,9 +162,6 @@ High-availability Prometheus (two replicas) also **doubles ingest** of whatever 
 2. Confirm hub ingest and dashboard queries still answer the operational question you needed.
 3. On a lab hub, generate sharded cardinality rules and watch ruler CPU at the 30-minute mark.
 
-Design notes for the dashboard path: [Cardinality Dashboards (ACM 2.15)](https://github.com/stolostron/stolostron/tree/main/dev-preview#cardinality-dashboards-acm-215).
-
 Product docs:
 
-- [Configuring APIs for the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index) (PrometheusRule and cardinality)
-- [Relabeling default metrics for the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index)
+- [ACM Observability](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/)

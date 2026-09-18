@@ -1,7 +1,7 @@
 # Keep the 15-second view: raw metrics collection with ACM
 
 **Audience:** Platform engineers who need incident-level resolution from ACM Observability without federating the entire fleet at native scrape cadence.  
-**Applies to:** MultiCluster Observability Addon (MCOA). Raw collection is **Technology Preview**.  
+**Applies to:** MultiCluster Observability Addon (MCOA) in ACM 5.0. Raw collection is **Technology Preview**. Perses dashboards are generally available.  
 **Status:** Draft 5.0
 
 Fleet dashboards that only update every five minutes hide the signal you need during an incident. A CPU throttle, a network micro-burst, or a brief `up` flap never lands in the downsample.
@@ -43,7 +43,7 @@ What happens next:
 1. That config leaves the MCOA federation path.
 2. On the managed cluster, the metric selectors become Prometheus `remoteWrite` configuration for Cluster Monitoring Operator (CMO) platform or user-workload Prometheus.
 3. Series arrive on the hub at native scrape resolution.
-4. Query them in Grafana on **Observatorium-Dynamic** (30-second step). The five-minute Observatorium datasource does not show the raw path.
+4. Query them in Perses at a **30-second step**. A five-minute step still looks like the federated downsample and will not show the raw path.
 
 Every other `ScrapeConfig` without the annotation stays on the federated, downsampled path.
 
@@ -69,7 +69,7 @@ Native resolution produces more data points than five-minute federation. Plan fo
 - **High-availability Prometheus doubles ingest.** Two in-cluster Prometheus replicas each stream an independent copy. Thanos Compactor later drops the redundant samples from long-term object storage, but Receive still processes both streams. Size Receive before you enable raw collection on high-cardinality jobs.
 - **Storage.** Higher ingest needs more hub write-ahead log (WAL) and receiver block buffer, and more object storage for the raw-resolution blocks.
 - **Managed-cluster Prometheus load.** Remote-write is extra work on the source.
-- **The right Grafana datasource.** If dashboards still use the five-minute Observatorium source, raw series look as if they never arrived. Use Observatorium-Dynamic.
+- **The right query step in Perses.** If dashboards still use a five-minute step, raw series look as if they never arrived. Use a 30-second step.
 
 ## Try it on one diagnostic config
 
@@ -99,17 +99,16 @@ spec:
 
 Keep `app.kubernetes.io/component: platform-metrics-collector` (or `user-workload-metrics-collector`) so MCOA still owns the object. The annotation is what switches **this** config onto remote-write. Register the name on the `ClusterManagementAddOn` the same way as any custom scrape job.
 
-Then verify on Observatorium-Dynamic:
+Then verify in Perses at a 30-second step:
 
 ```promql
 up{job="apiserver"}
 ```
 
-You should see points at native scrape cadence (often 15 to 30 seconds on the managed cluster), with the usual ACM `cluster` and `clusterID` labels. If the query is empty on Dynamic but populated on the five-minute source, you are looking at the federated copy.
+You should see points at native scrape cadence (often 15 to 30 seconds on the managed cluster), with the usual ACM `cluster` and `clusterID` labels. If the query is empty at 30 seconds but populated at a five-minute step, you are looking at the federated copy.
 
 Watch Thanos Receive CPU, memory, and ingest, plus managed-cluster Prometheus remote-write queues, for a few scrape cycles. High-availability replicas double the volume. If that looks healthy, add matchers or a second `ScrapeConfig`. Do not start by collecting every series, and do not switch the full platform allowlist to raw until Receive and the network are sized for it.
 
 Product docs:
 
-- [Enabling the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#enable-mcoa)
-- [Adding custom metrics with MCOA](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#add-custom-metrics-mcoa)
+- [ACM Observability](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/)

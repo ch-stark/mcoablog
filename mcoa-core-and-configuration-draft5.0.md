@@ -1,7 +1,7 @@
 # MCOA core and configuration: how ACM collects fleet metrics now
 
 **Audience:** Platform engineers, SREs, and architects who run Red Hat Advanced Cluster Management for Kubernetes (ACM) Observability.  
-**Applies to:** MultiCluster Observability Addon (MCOA) metrics collection (ACM 2.15+; confirm APIs and defaults for your release).  
+**Applies to:** MultiCluster Observability Addon (MCOA) metrics collection in ACM 5.0.  
 **Status:** Draft 5.0
 
 You do not need a second observability stack to watch a fleet. You need a collector that speaks the same APIs as OpenShift monitoring, survives a network blip, and lets you change *what* is collected without rewriting a custom allowlist.
@@ -39,7 +39,9 @@ The Agent then **remote-writes** to the hub. It buffers in a local write-ahead l
 
 ## Enable MCOA from the MCO CR
 
-You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics are optional.
+You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics, alert metrics, and right-sizing analytics are optional.
+
+In ACM 5.0, **Perses** is the generally available dashboard for hub and managed-cluster metrics. Query series there after collection is up.
 
 ```yaml
 apiVersion: observability.open-cluster-management.io/v1beta2
@@ -50,13 +52,20 @@ spec:
   instanceSize: small   # small, medium, large, … — hub-side Thanos sizing
   capabilities:
     platform:
+      analytics:
+        namespaceRightSizingRecommendation:
+          enabled: true
+        virtualizationRightSizingRecommendation:
+          enabled: true
       metrics:
+        alerts:
+          enabled: false
         default:
           enabled: true
-        # ui:
-        #   enabled: true   # Perses dashboards (Technology Preview)
     userWorkloads:
       metrics:
+        alerts:
+          enabled: false
         default:
           enabled: true
   storageConfig:
@@ -64,6 +73,14 @@ spec:
       name: thanos-object-storage
       key: thanos.yaml
 ```
+
+| Field | What it does |
+| :--- | :--- |
+| `platform.metrics.default` | Required for MCOA. Federates the default platform metric set. |
+| `userWorkloads.metrics.default` | Optional. Federates user-workload metrics. |
+| `platform.metrics.alerts` / `userWorkloads.metrics.alerts` | Optional. Set `enabled: true` to collect alert-rule metrics (`ALERTS`) for that stack. The example above leaves both off. |
+| `platform.analytics.namespaceRightSizingRecommendation` | Optional. Namespace right-sizing recommendations. |
+| `platform.analytics.virtualizationRightSizingRecommendation` | Optional. OpenShift Virtualization right-sizing recommendations. |
 
 When platform (and, if you want it, user-workload) metrics default to `enabled: true`:
 
@@ -75,7 +92,11 @@ Prerequisites from product docs: Observability is already enabled on the hub, an
 
 ```bash
 oc patch mco observability --type=merge -p '{"spec":{"capabilities":{"platform":{"metrics":{"default":{"enabled": true}}},"userWorkloads":{"metrics":{"default":{"enabled": true}}}}}}'
+```
 
+That patch only enables default metric collection. Set `metrics.alerts` and `platform.analytics` in the CR (as in the YAML above) when you want alert metrics or right-sizing recommendations.
+
+```bash
 oc get prometheusagents -n open-cluster-management-observability
 oc get cma multicluster-observability-addon -o yaml | yq '.spec.installStrategy.placements'
 ```
@@ -115,7 +136,7 @@ Default platform scrape configs that MCOA generates include:
 - `platform-metrics-default` — base platform set
 - `platform-metrics-hcp` — hosted control planes
 - `platform-metrics-virtualization` — OpenShift Virtualization
-- `platform-metrics-alerts` — alert-rule metrics
+- `platform-metrics-alerts` — alert-rule metrics, when `platform.metrics.alerts.enabled` is `true`
 
 One `PrometheusAgent` is created **per placement**. Default `ScrapeConfig` and `PrometheusRule` objects are **shared** across placements unless you add your own.
 
@@ -198,7 +219,7 @@ MCOA also ships spoke alerts:
 - `MetricsCollectorRemoteWriteFailures` — high remote-write error rate
 - `MetricsCollectorRemoteWriteBehind` — the send queue is falling behind
 
-Those close the gap between “pod is Running” and “the hub is actually ingesting.”
+Those close the gap between “pod is Running” and “the hub is actually ingesting.” They are separate from `spec.capabilities.*.metrics.alerts`, which controls whether **alert-rule metrics** (`ALERTS`) are collected from platform or user-workload Prometheus.
 
 ## What to customize, and what not to
 
@@ -216,7 +237,7 @@ Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Comm
 
 1. Enable platform metrics (and user-workload if you need them) on the MCO CR.
 2. Confirm Agents and CMA placements exist.
-3. Leave defaults in place until Grafana shows the usual platform series (`cluster`, `clusterID`).
+3. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
 4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Register it on the CMA. Confirm a `ManifestWork` on the spoke and the series on the hub.
 
 Related drafts in this repo:
@@ -227,5 +248,4 @@ Related drafts in this repo:
 
 Product docs:
 
-- [Enabling the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#enable-mcoa)
-- [Adding custom metrics for the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#add-custom-metrics-mcoa)
+- [ACM Observability](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/)

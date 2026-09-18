@@ -1,10 +1,10 @@
 # Add a ScrapeConfig via Git: fleet metrics without hub `oc apply`
 
 **Audience:** Platform engineers and GitOps owners who already manage ACM from Git.  
-**Applies to:** MultiCluster Observability Addon (MCOA) custom metrics (ACM 2.15+).  
+**Applies to:** MultiCluster Observability Addon (MCOA) custom metrics in ACM 5.0.  
 **Status:** Draft 5.0
 
-A custom metric that exists only because someone ran `oc apply` on the hub will disappear the next time that person is on leave. MCOA is built around Kubernetes APIs (`ScrapeConfig`, `PrometheusRule`, `ClusterManagementAddOn`). Those objects belong in Git, the same way you already store `Placement` and `Policy`.
+A custom metric that exists only because someone ran `oc apply` on the hub will disappear the next time that person is on leave. MCOA is built around Kubernetes APIs (`ScrapeConfig`, `PrometheusRule`, `ClusterManagementAddOn`). Those objects belong in Git, the same way you already store `Placement` and other hub config.
 
 This post is the GitOps path for [MCOA core and configuration](mcoa-core-and-configuration-draft5.0.md). You author a `ScrapeConfig` in a repo, sync it to the hub, then **register** it on the addon so MCOA ships it to managed clusters.
 
@@ -22,20 +22,9 @@ That split is useful:
 
 Review, revert, and promotion then look like every other ACM config: pull request, sync, placement.
 
-## Two Git paths (pick one)
-
-| Path | What Git owns | When to use |
-| :--- | :--- | :--- |
-| **A. Hub `ScrapeConfig` + CMA reference** | Namespaced `ScrapeConfig` (and a **patch** that adds it to the CMA) | Default. Same mechanism as product docs. Works with OpenShift GitOps on the hub. |
-| **B. ACM Policy from Git** | `Policy` + `Placement` + `PlacementBinding` that `musthave` a `ScrapeConfig` on the spoke | A **subset** of clusters (for example `environment: dev`) or a drop rule you do not want on every placement. |
-
-Path A is the documented MCOA flow. Path B is useful when you already roll spoke config with Governance and you want a label selector, not a CMA placement list.
-
 Do **not** GitOps-replace the entire `multicluster-observability-addon` CMA with a file that only lists your custom config. MCOA already registered default `PrometheusAgent` and platform `ScrapeConfig` names. A full replace drops them and breaks the default dashboards.
 
-## Path A — GitOps on the hub
-
-### Repo layout
+## Repo layout
 
 ```text
 mcoa-metrics/
@@ -49,7 +38,7 @@ mcoa-metrics/
     application.yaml
 ```
 
-### 1. Commit the `ScrapeConfig`
+## 1. Commit the `ScrapeConfig`
 
 Keep it in `open-cluster-management-observability`. Set `app.kubernetes.io/component` to `platform-metrics-collector` or `user-workload-metrics-collector`. Required fields: `jobName`, `metricsPath: /federate`, `params.match[]`.
 
@@ -83,7 +72,7 @@ resources:
 
 Start with a **short** `match[]`. A wide regex on a high-cardinality name is how you fill Thanos Receive. Pair this with [Cardinality](cardinality-draft5.0.md).
 
-### 2. Sync it with OpenShift GitOps
+## 2. Sync it with OpenShift GitOps
 
 Point an `Application` at that path. Destination namespace must match the `ScrapeConfig`.
 
@@ -113,7 +102,7 @@ spec:
 
 Leave `prune: false` until you are sure Git is the only writer of these objects. MCOA-generated defaults should **not** live in this Application.
 
-### 3. Register the config on the CMA
+## 3. Register the config on the CMA
 
 Reference the object **after** GitOps has created it. If the name is missing, the add-on status stays `Deploying`.
 
@@ -167,7 +156,7 @@ spec:
 
 API group for MCOA scrape configs in the CMA is `monitoring.rhobs`. Recording rules use `monitoring.coreos.com` / `prometheusrules`.
 
-### 4. Verify hub, ManifestWork, spoke
+## 4. Verify hub, ManifestWork, spoke
 
 ```bash
 # Hub object from Git
@@ -183,66 +172,7 @@ oc get manifestworks -n <managed-cluster-namespace> | grep -i observ
 oc get scrapeconfig -n open-cluster-management-agent-addon
 ```
 
-Query Grafana for `up{job="apiserver"}` and expect `cluster` / `clusterID`. If the series is missing, check add-on status, Agent logs, and whether you queried the federated (five-minute) datasource.
-
-## Path B — Policy in Git for a subset of spokes
-
-Governance already syncs from Git in many ACM estates. A `ConfigurationPolicy` can `musthave` a `ScrapeConfig` in `open-cluster-management-agent-addon` on clusters that match a `Placement`.
-
-Use this when:
-
-- You want `environment: dev` only, without a dedicated CMA placement.
-- You are dropping series at scrape time (`metricRelabelings`) on a subset of clusters.
-
-Label the object `app.kubernetes.io/component: platform-metrics-collector` (or the user-workload value) so the spoke Prometheus Operator merges it into the Agent.
-
-```yaml
-apiVersion: policy.open-cluster-management.io/v1
-kind: Policy
-metadata:
-  name: policy-mcoa-custom-scrape
-  namespace: open-cluster-management-global-set
-spec:
-  disabled: false
-  remediationAction: inform   # flip to enforce after you read compliance
-  policy-templates:
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: mcoa-custom-scrape
-        spec:
-          remediationAction: inform
-          severity: low
-          namespaceSelector:
-            include:
-              - open-cluster-management-agent-addon
-          object-templates:
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: monitoring.rhobs/v1alpha1
-                kind: ScrapeConfig
-                metadata:
-                  name: platform-custom-apiserver-up
-                  namespace: open-cluster-management-agent-addon
-                  labels:
-                    app.kubernetes.io/component: platform-metrics-collector
-                spec:
-                  jobName: platform-custom-apiserver-up
-                  metricsPath: /federate
-                  scrapeClass: ocp-monitoring
-                  scheme: HTTPS
-                  staticConfigs:
-                    - targets:
-                        - prometheus-k8s.openshift-monitoring.svc:9091
-                  params:
-                    match[]:
-                      - 'up{job="apiserver"}'
-```
-
-Bind that Policy with a `Placement` and `PlacementBinding` in the same Git directory. Start at `inform`. Switch both `remediationAction` fields to `enforce` only after compliance looks right.
-
-Path B does **not** replace Path A for fleet defaults. Prefer the CMA so MCOA remains the owner of what the Agent scrapes.
+Query Perses for `up{job="apiserver"}` and expect `cluster` / `clusterID`. If the series is missing, check add-on status, Agent logs, and whether you queried at a five-minute step instead of native resolution.
 
 ## Ordering and failure modes
 
@@ -259,12 +189,11 @@ Path B does **not** replace Path A for fleet defaults. Prefer the CMA so MCOA re
 
 1. Enable MCOA ([core post](mcoa-core-and-configuration-draft5.0.md)).
 2. Commit one small `ScrapeConfig`. Sync it. Patch the CMA.
-3. Confirm `ManifestWork` and the series on the hub.
+3. Confirm `ManifestWork` and the series in Perses.
 4. Only then add more matchers or a second file.
 
 If you still have a legacy `observability-metrics-custom-allowlist`, convert it with the `allowlist-migration` CLI (Fleet Management console, **Help > Command Line Tools**), commit the generated YAML, and register those names the same way.
 
 Product docs:
 
-- [Adding custom metrics for the multicluster observability add-on](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index#add-custom-metrics-mcoa)
-- [Migrating custom allowlist](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.17/html-single/observability/index)
+- [ACM Observability](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/)
