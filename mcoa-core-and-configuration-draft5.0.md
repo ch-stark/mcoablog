@@ -39,9 +39,9 @@ The Agent then **remote-writes** to the hub. It buffers in a local write-ahead l
 
 ## Enable MCOA from the MCO CR
 
-You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics, alert metrics, and right-sizing analytics are optional.
+You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics, alert metrics, Perses dashboards, and right-sizing analytics are optional.
 
-In ACM 5.0, **Perses** is the generally available dashboard for hub and managed-cluster metrics. Query series there after collection is up.
+In ACM 5.0, **ACM Perses dashboards are generally available**. They are not on by default. Set `platform.metrics.ui.enabled: true` (platform metrics default must already be enabled). Then open **Observe > Dashboards (Perses)** in the OpenShift console on the hub.
 
 ```yaml
 apiVersion: observability.open-cluster-management.io/v1beta2
@@ -62,6 +62,8 @@ spec:
           enabled: false
         default:
           enabled: true
+        ui:
+          enabled: true
     userWorkloads:
       metrics:
         alerts:
@@ -77,6 +79,7 @@ spec:
 | Field | What it does |
 | :--- | :--- |
 | `platform.metrics.default` | Required for MCOA. Federates the default platform metric set. |
+| `platform.metrics.ui` | Optional. Set `enabled: true` to turn on ACM Perses dashboards (GA in ACM 5.0). Requires `platform.metrics.default`. |
 | `userWorkloads.metrics.default` | Optional. Federates user-workload metrics. |
 | `platform.metrics.alerts` / `userWorkloads.metrics.alerts` | Optional. Set `enabled: true` to collect alert-rule metrics (`ALERTS`) for that stack. The example above leaves both off. |
 | `platform.analytics.namespaceRightSizingRecommendation` | Optional. Namespace right-sizing recommendations. |
@@ -94,7 +97,7 @@ Prerequisites from product docs: Observability is already enabled on the hub, an
 oc patch mco observability --type=merge -p '{"spec":{"capabilities":{"platform":{"metrics":{"default":{"enabled": true}}},"userWorkloads":{"metrics":{"default":{"enabled": true}}}}}}'
 ```
 
-That patch only enables default metric collection. Set `metrics.alerts` and `platform.analytics` in the CR (as in the YAML above) when you want alert metrics or right-sizing recommendations.
+That patch only enables default metric collection. Set `metrics.ui`, `metrics.alerts`, and `platform.analytics` in the CR (as in the YAML above) when you want Perses dashboards, alert metrics, or right-sizing recommendations.
 
 ```bash
 oc get prometheusagents -n open-cluster-management-observability
@@ -237,7 +240,7 @@ Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Comm
 
 1. Enable platform metrics (and user-workload if you need them) on the MCO CR.
 2. Confirm Agents and CMA placements exist.
-3. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
+3. Enable `platform.metrics.ui` and leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
 4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Confirm a `ManifestWork` on the spoke and the series on the hub.
 
 Related drafts in this repo:
