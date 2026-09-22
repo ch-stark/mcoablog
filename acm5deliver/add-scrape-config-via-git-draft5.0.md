@@ -5,7 +5,7 @@
 **Status:** Draft 5.0  
 **Shipped in:** [ACM-34753](https://issues.redhat.com/browse/ACM-34753) / [stolostron/multicluster-observability-addon#509](https://github.com/stolostron/multicluster-observability-addon/pull/509)
 
-GitOps for ACM Observability used to be two commits that hated each other. First you created a `ScrapeConfig` or `PrometheusRule` on the hub. Then you patched the singleton `ClusterManagementAddOn` (`multicluster-observability-addon`) so that name appeared under `spec.installStrategy.placements[].configs[]`. Two writers, one list, merge conflicts every time someone added a matcher.
+Adding ScrapeConfig was not very user friendly. A ACM Policy could be used to update it automatically after applying it via GIT but we improved proceess significantly. Before ACM 5 first you created a `ScrapeConfig` or `PrometheusRule` on the hub. Then you patched the singleton `ClusterManagementAddOn` (`multicluster-observability-addon`) so that name appeared under `spec.installStrategy.placements[].configs[]`. Two writers, one list, merge conflicts every time someone added a matcher.
 
 ACM 5.0 ends that second step. You put the object in Git. You label it and annotate the target placements. The MCOA controller watches those objects, registers them on the `ClusterManagementAddOn` (CMA), and the addon manager copies them to spokes. You never edit the CMA by hand.
 
