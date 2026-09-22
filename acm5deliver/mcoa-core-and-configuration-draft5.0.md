@@ -90,6 +90,8 @@ spec:
         virtualizationRightSizingRecommendation:
           enabled: true
       metrics:
+        ui:
+          enabled: true
         alerts:
           enabled: false
         default:
