@@ -174,10 +174,11 @@ spec:
 
 A `ScrapeConfig` is a named federation job: `jobName`, `metricsPath: /federate`, and `params.match[]`. Label it so the right Agent picks it up:
 
-- `app.kubernetes.io/component: platform-metrics-collector`
-- `app.kubernetes.io/component: user-workload-metrics-collector`
+- `app.kubernetes.io/part-of: multicluster-observability-addon`
+- `app.kubernetes.io/component: platform-metrics-collector` **or** `user-workload-metrics-collector`
+- Annotation `observability.open-cluster-management.io/placements: "namespace/name"` (comma-separated, no spaces)
 
-For the platform label, MCOA fills `scrapeClass` and targets so federation hits platform Prometheus. You can override those fields. User-workload configs often need `scrapeClass` and `staticConfigs` set yourself.
+For platform jobs, the controller server-side-applies `scrapeClass`, `scheme`, and `staticConfigs` to `not-configurable` so spoke rendering can fill them per cluster. Do not set those fields in Git. User-workload jobs often need `scrapeClass` and `staticConfigs` set yourself.
 
 ```yaml
 apiVersion: monitoring.rhobs/v1alpha1
@@ -186,7 +187,10 @@ metadata:
   name: add-custom-metrics
   namespace: open-cluster-management-observability
   labels:
+    app.kubernetes.io/part-of: multicluster-observability-addon
     app.kubernetes.io/component: platform-metrics-collector
+  annotations:
+    observability.open-cluster-management.io/placements: "open-cluster-management-global-set/global"
 spec:
   jobName: some-job-name
   metricsPath: /federate
@@ -195,13 +199,13 @@ spec:
       - '{__name__="up"}'
 ```
 
-Creating the object is enough when it has `app.kubernetes.io/part-of: multicluster-observability-addon`, a collector label (`platform-metrics-collector` or `user-workload-metrics-collector`), and the placements annotation `observability.open-cluster-management.io/placements`. The MCOA controller registers it on the `ClusterManagementAddOn`. You do not patch the CMA by hand.
+Creating the object is enough. The MCOA controller auto-discovers it and registers it on the `ClusterManagementAddOn` ([PR 509](https://github.com/stolostron/multicluster-observability-addon/pull/509)). You do not patch the CMA by hand. GitOps walkthrough: [Add a ScrapeConfig via Git](add-scrape-config-via-git-draft5.0.md).
 
 Independent `ScrapeConfig` objects are how MCOA **shards** federation: several smaller pulls instead of one huge allowlist. That is the main scalability change from the legacy collector.
 
 ### 4. `PrometheusRule` — aggregate before you ship
 
-Use recording rules on the managed cluster when a raw metric is too expensive to store on the hub. Aggregate locally, then scrape only the recorded name. Use API group `monitoring.coreos.com`. Optional annotation `observability.open-cluster-management.io/target-namespace` pins the rule to a workload namespace. See [Cardinality](cardinality-draft5.0.md).
+Use recording rules on the managed cluster when a raw metric is too expensive to store on the hub. Aggregate locally, then scrape only the recorded name. Use API group `monitoring.coreos.com`. The same `part-of` label, collector label, and placements annotation as `ScrapeConfig` make the controller register the rule on the CMA. Optional annotation `observability.open-cluster-management.io/target-namespace` pins the rule to a workload namespace. See [Cardinality](cardinality-draft5.0.md).
 
 ## Hub sizing is still `instanceSize`
 

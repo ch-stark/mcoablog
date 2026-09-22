@@ -39,9 +39,9 @@ The Agent then **remote-writes** to the hub. It buffers in a local write-ahead l
 
 ## Enable MCOA from the MCO CR
 
-You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics, alert metrics, Perses dashboards, and right-sizing analytics are optional.
+You still enable Observability with a `MultiClusterObservability` resource. MCOA is the `capabilities` block. Platform metrics are required. User-workload metrics, alert metrics, and right-sizing analytics are optional.
 
-In ACM 5.0, **ACM Perses dashboards are generally available**. They are not on by default. Set `platform.metrics.ui.enabled: true` (platform metrics default must already be enabled). Then open **Observe > Dashboards (Perses)** in the OpenShift console on the hub.
+In ACM 5.0, **Perses** is the generally available dashboard for hub and managed-cluster metrics. Query series there after collection is up.
 
 ```yaml
 apiVersion: observability.open-cluster-management.io/v1beta2
@@ -62,8 +62,6 @@ spec:
           enabled: false
         default:
           enabled: true
-        ui:
-          enabled: true
     userWorkloads:
       metrics:
         alerts:
@@ -79,7 +77,6 @@ spec:
 | Field | What it does |
 | :--- | :--- |
 | `platform.metrics.default` | Required for MCOA. Federates the default platform metric set. |
-| `platform.metrics.ui` | Optional. Set `enabled: true` to turn on ACM Perses dashboards (GA in ACM 5.0). Requires `platform.metrics.default`. |
 | `userWorkloads.metrics.default` | Optional. Federates user-workload metrics. |
 | `platform.metrics.alerts` / `userWorkloads.metrics.alerts` | Optional. Set `enabled: true` to collect alert-rule metrics (`ALERTS`) for that stack. The example above leaves both off. |
 | `platform.analytics.namespaceRightSizingRecommendation` | Optional. Namespace right-sizing recommendations. |
@@ -97,7 +94,7 @@ Prerequisites from product docs: Observability is already enabled on the hub, an
 oc patch mco observability --type=merge -p '{"spec":{"capabilities":{"platform":{"metrics":{"default":{"enabled": true}}},"userWorkloads":{"metrics":{"default":{"enabled": true}}}}}}'
 ```
 
-That patch only enables default metric collection. Set `metrics.ui`, `metrics.alerts`, and `platform.analytics` in the CR (as in the YAML above) when you want Perses dashboards, alert metrics, or right-sizing recommendations.
+That patch only enables default metric collection. Set `metrics.alerts` and `platform.analytics` in the CR (as in the YAML above) when you want alert metrics or right-sizing recommendations.
 
 ```bash
 oc get prometheusagents -n open-cluster-management-observability
@@ -177,10 +174,11 @@ spec:
 
 A `ScrapeConfig` is a named federation job: `jobName`, `metricsPath: /federate`, and `params.match[]`. Label it so the right Agent picks it up:
 
-- `app.kubernetes.io/component: platform-metrics-collector`
-- `app.kubernetes.io/component: user-workload-metrics-collector`
+- `app.kubernetes.io/part-of: multicluster-observability-addon`
+- `app.kubernetes.io/component: platform-metrics-collector` **or** `user-workload-metrics-collector`
+- Annotation `observability.open-cluster-management.io/placements: "namespace/name"` (comma-separated, no spaces)
 
-For the platform label, MCOA fills `scrapeClass` and targets so federation hits platform Prometheus. You can override those fields. User-workload configs often need `scrapeClass` and `staticConfigs` set yourself.
+For platform jobs, the controller server-side-applies `scrapeClass`, `scheme`, and `staticConfigs` to `not-configurable` so spoke rendering can fill them per cluster. Do not set those fields in Git. User-workload jobs often need `scrapeClass` and `staticConfigs` set yourself.
 
 ```yaml
 apiVersion: monitoring.rhobs/v1alpha1
@@ -189,7 +187,10 @@ metadata:
   name: add-custom-metrics
   namespace: open-cluster-management-observability
   labels:
+    app.kubernetes.io/part-of: multicluster-observability-addon
     app.kubernetes.io/component: platform-metrics-collector
+  annotations:
+    observability.open-cluster-management.io/placements: "open-cluster-management-global-set/global"
 spec:
   jobName: some-job-name
   metricsPath: /federate
@@ -198,13 +199,13 @@ spec:
       - '{__name__="up"}'
 ```
 
-Creating the object is enough when it has `app.kubernetes.io/part-of: multicluster-observability-addon`, a collector label (`platform-metrics-collector` or `user-workload-metrics-collector`), and the placements annotation `observability.open-cluster-management.io/placements`. The MCOA controller registers it on the `ClusterManagementAddOn`. You do not patch the CMA by hand.
+Creating the object is enough. The MCOA controller auto-discovers it and registers it on the `ClusterManagementAddOn` ([PR 509](https://github.com/stolostron/multicluster-observability-addon/pull/509)). You do not patch the CMA by hand. GitOps walkthrough: [Add a ScrapeConfig via Git](add-scrape-config-via-git-draft5.0.md).
 
 Independent `ScrapeConfig` objects are how MCOA **shards** federation: several smaller pulls instead of one huge allowlist. That is the main scalability change from the legacy collector.
 
 ### 4. `PrometheusRule` — aggregate before you ship
 
-Use recording rules on the managed cluster when a raw metric is too expensive to store on the hub. Aggregate locally, then scrape only the recorded name. Use API group `monitoring.coreos.com`. Optional annotation `observability.open-cluster-management.io/target-namespace` pins the rule to a workload namespace. See [Cardinality](cardinality-draft5.0.md).
+Use recording rules on the managed cluster when a raw metric is too expensive to store on the hub. Aggregate locally, then scrape only the recorded name. Use API group `monitoring.coreos.com`. The same `part-of` label, collector label, and placements annotation as `ScrapeConfig` make the controller register the rule on the CMA. Optional annotation `observability.open-cluster-management.io/target-namespace` pins the rule to a workload namespace. See [Cardinality](cardinality-draft5.0.md).
 
 ## Hub sizing is still `instanceSize`
 
@@ -240,7 +241,7 @@ Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Comm
 
 1. Enable platform metrics (and user-workload if you need them) on the MCO CR.
 2. Confirm Agents and CMA placements exist.
-3. Enable `platform.metrics.ui` and leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
+3. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
 4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Confirm a `ManifestWork` on the spoke and the series on the hub.
 
 Related drafts in this repo:
