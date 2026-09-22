@@ -6,7 +6,9 @@
 
 You do not need a second observability stack to watch a fleet. You need a collector that speaks the same APIs as OpenShift monitoring, survives a network blip, and lets you change *what* is collected without rewriting a custom allowlist.
 
-That is the job of the **multicluster observability add-on (MCOA)**. It replaces the legacy endpoint operator and metrics collector with the Prometheus Operator and Prometheus Agent from the Red Hat OpenShift Cluster Observability Operator. Configuration moves from a single allowlist ConfigMap to standard `PrometheusAgent`, `ScrapeConfig`, and `PrometheusRule` objects.
+That is the job of the **multicluster observability add-on (MCOA)**. Metrics collection moves from the custom metrics collector to the Prometheus Operator and Prometheus Agent from the Red Hat OpenShift Cluster Observability Operator. Configuration moves from a single allowlist ConfigMap to standard `PrometheusAgent`, `ScrapeConfig`, and `PrometheusRule` objects.
+
+In ACM 5.0 the **endpoint operator** (the spoke endpoint connector) is **re-enabled**, but not as the old collector. [ACM-34198](https://issues.redhat.com/browse/ACM-34198) adds a dedicated `mcoa` entrypoint on the same `observability-endpoint-operator` image. That process starts **only** a Cluster Monitoring Operator ConfigMap controller: it injects the hub Alertmanager URL into `cluster-monitoring-config`, stays small, and does not run legacy metric federation. [ACM-34602](https://issues.redhat.com/browse/ACM-34602) deploys that process from MCOA. Collection stays on the Prometheus Agent.
 
 This post is the core of the series. It covers what MCOA is, how you turn it on, which objects you actually edit, and what the addon manager will overwrite if you fight it.
 
@@ -25,9 +27,10 @@ MCOA keeps the hub-side Thanos / Observatorium store. It changes **how managed c
 
 ## What changes
 
-| Concern | Legacy add-on | MCOA |
+| Concern | Legacy add-on | MCOA (ACM 5.0) |
 | :--- | :--- | :--- |
-| Spoke collector | Endpoint operator and custom metrics collector | Prometheus Agent, reconciled by Prometheus Operator |
+| Spoke collector | Custom metrics collector, deployed by the endpoint operator | Prometheus Agent, reconciled by Prometheus Operator |
+| Spoke CMO / Alertmanager wiring | Endpoint operator (full legacy mode) | Endpoint operator **re-enabled** in `mcoa` mode only: CMO `cluster-monitoring-config` and user-workload Alertmanager, not the collector |
 | Workload config | Fields on the `MultiClusterObservability` (MCO) CR | `PrometheusAgent` CR |
 | Metric selection | Allowlist ConfigMap | `ScrapeConfig` CRs |
 | Recording and alerting rules | Allowlist ConfigMap | `PrometheusRule` CRs |
@@ -36,6 +39,33 @@ MCOA keeps the hub-side Thanos / Observatorium store. It changes **how managed c
 Platform metrics still federate from in-cluster Prometheus (on OpenShift, that is Cluster Monitoring Operator). User-workload metrics federate from user-workload Prometheus, or from a Cluster Observability Operator `MonitoringStack` if you point a `ScrapeConfig` at it.
 
 The Agent then **remote-writes** to the hub. It buffers in a local write-ahead log (WAL), so a short partition does not empty the queue. Product documentation describes that window as on the order of **up to two hours**, and it is configuration-dependent—not a hard SLO.
+
+## The endpoint connector: `mcoa` entrypoint ([ACM-34198](https://issues.redhat.com/browse/ACM-34198))
+
+MCOA still needs spoke Prometheus to **forward alerts** to the hub Alertmanager. OpenShift Cluster Monitoring Operator (CMO) reads that from the `cluster-monitoring-config` ConfigMap. There is not yet a CMO CRD you can apply from the hub as a `ManifestWork`, so ACM 5.0 keeps an in-cluster controller as a **bridge**.
+
+That controller is the endpoint operator started with the `mcoa` subcommand ([ACM-34198](https://issues.redhat.com/browse/ACM-34198); implemented in [multicluster-observability-operator#2487](https://github.com/stolostron/multicluster-observability-operator/pull/2487)):
+
+- **Same image, different process.** The spoke still uses `observability-endpoint-operator`. `mcoa` registers only the CMO ConfigMap watcher and mutator. Legacy collector, federation, and the old cache are not started.
+- **What it writes.** Hub Alertmanager URL (and related CA) into `cluster-monitoring-config`, and the equivalent user-workload monitoring config when UWM is enabled.
+- **Small footprint.** Requests and limits are tuned for this single job, not for the full legacy operator.
+- **Conflicts are visible.** If something else overwrites the Alertmanager stanza, the controller does not silently thrash the ConfigMap. It increments `mcoa_cmo_config_conflicts_total` and emits a Kubernetes `Warning` event.
+- **Cleanup on uninstall.** A hub-scoped cleanup command reverts those CMO edits so a removed addon does not leave hub Alertmanager config behind.
+
+When OpenShift ships a declarative CMO CRD, this in-cluster mutator can go away: the hub will apply the config through `ManifestWork`. Until then, treat the `mcoa` endpoint connector as part of ACM 5.0 MCOA, not as a return of the legacy collector.
+
+On a managed cluster:
+
+```bash
+# Endpoint connector in MCOA mode (not the legacy collector)
+oc get deploy -n open-cluster-management-agent-addon | grep -i endpoint
+
+# CMO config includes hub Alertmanager
+oc get cm cluster-monitoring-config -n openshift-monitoring -o yaml
+
+# ConfigMap fights show up as Warning events
+oc get events -n open-cluster-management-agent-addon --field-selector type=Warning
+```
 
 ## Enable MCOA from the MCO CR
 
@@ -87,6 +117,7 @@ When platform (and, if you want it, user-workload) metrics default to `enabled: 
 1. The MCO operator **stops** deploying the legacy metrics collectors.
 2. It deploys `multicluster-observability-addon-manager` in `open-cluster-management-observability`.
 3. That manager creates default `PrometheusAgent`, `ScrapeConfig`, and `PrometheusRule` objects and registers them on the `ClusterManagementAddOn` named `multicluster-observability-addon`.
+4. MCOA deploys the endpoint operator with the `mcoa` entrypoint ([ACM-34198](https://issues.redhat.com/browse/ACM-34198)). That is the Alertmanager bridge described above, not the old collector.
 
 Prerequisites from product docs: Observability is already enabled on the hub, and Cluster Observability Operator is installed.
 
@@ -241,8 +272,9 @@ Migrate a legacy allowlist with the `allowlist-migration` CLI from **Help > Comm
 
 1. Enable platform metrics (and user-workload if you need them) on the MCO CR.
 2. Confirm Agents and CMA placements exist.
-3. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
-4. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Confirm a `ManifestWork` on the spoke and the series on the hub.
+3. On a managed cluster, confirm the endpoint operator is running in `mcoa` mode and `cluster-monitoring-config` lists the hub Alertmanager ([ACM-34198](https://issues.redhat.com/browse/ACM-34198)).
+4. Leave defaults in place until Perses shows the usual platform series (`cluster`, `clusterID`).
+5. Add **one** extra `ScrapeConfig` for a metric you already scrape locally. Confirm a `ManifestWork` on the spoke and the series on the hub.
 
 Related drafts in this repo:
 
@@ -253,3 +285,7 @@ Related drafts in this repo:
 Product docs:
 
 - [ACM Observability](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/)
+- [ACM-34198](https://issues.redhat.com/browse/ACM-34198) Dedicated `mcoa` entrypoint on the endpoint operator (CMO Alertmanager bridge)
+- [ACM-34602](https://issues.redhat.com/browse/ACM-34602) Deploy the endpoint operator from MCOA
+- [ACM-12472](https://issues.redhat.com/browse/ACM-12472) MCOA Alert Forwarding (ACM 5.0.0 epic)
+- [multicluster-observability-operator#2487](https://github.com/stolostron/multicluster-observability-operator/pull/2487) `mcoa` / cleanup command implementation
