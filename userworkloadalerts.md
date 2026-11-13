@@ -1,423 +1,304 @@
-# How to Test Your MCOA (User) Alert Forwarding Pipeline End-to-End 
- 
-One of the trickiest parts of setting up Multi-Cluster Observability Architecture (MCOA) alert
-forwarding isn't writing the policy — it's verifying that the whole pipeline actually works.
-Do you deploy a real application, misconfigure it on purpose, and hope an alert fires? That's
-messy, unpredictable, and hard to clean up.
+# Test user workload alert forwarding to the RHACM hub
 
-There's a better way. By using the PromQL expression `vector(1)`, you can create a
-**guaranteed always-firing alert** that lets you validate every hop in the pipeline — from the
-spoke's User Workload Prometheus, through network authentication, all the way to the Hub
-Alertmanager — without any application code at all.
+Before relying on centralized alerts, verify that an alert can travel from a managed cluster's User Workload Prometheus to the Red Hat Advanced Cluster Management for Kubernetes (RHACM) hub Alertmanager.
 
-Here's a complete, step-by-step walkthrough.
+This tutorial uses the PromQL expression `vector(1)` to generate a predictable test condition without deploying or breaking an application. You will verify local rule evaluation, confirm arrival at the hub with the expected cluster identity, and remove the test cleanly.
 
+The test covers this path:
+
+```text
+Managed cluster: User Workload Prometheus
+    -> HTTPS connection with bearer-token authentication
+    -> Hub: Observability Alertmanager
+```
+
+It verifies alert delivery to the hub Alertmanager. It does not validate metrics collection, Thanos storage, the new MCOA Gateway, or delivery to an email, webhook, or other notification receiver. Receiver delivery is an additional test.
+
+<!-- Publication note: Record the exact RHACM and OpenShift versions used to validate these commands and configuration examples before publication. This revised draft has not been executed against a cluster. -->
 
 ## Prerequisites
 
-Before you begin, make sure the following are in place:
+Use one designated OpenShift test cluster for this procedure. Before you begin:
 
-- **RHACM Observability** is installed and running on your Hub cluster.
-- The `observability-alertmanager-accessor-*` **bearer token Secret** and
-  `hub-alertmanager-router-ca-*` **CA cert ConfigMap** exist on the target managed cluster
-  (both are provisioned automatically by the Observability operator).
-- A `Placement` resource named `global` exists in `open-cluster-management-global-set` on the
-  Hub (this is the standard RHACM global placement targeting all managed clusters).
+- Enable RHACM Observability and the multicluster observability add-on (MCOA) for the intended managed cluster.
+- Enable user workload monitoring through the hub `MultiClusterObservability` CR, as shown below.
+- Enable user workload alert forwarding separately through the CR. Metrics collection and alert forwarding are distinct capabilities.
+- Install `oc` and `jq` on your workstation.
+- Obtain permission to create a namespace and `PrometheusRule` on the managed cluster, inspect monitoring configuration, and access the hub Alertmanager pod. The configuration steps require administrator permissions.
+- Agree how test alerts will be routed. Use a test receiver or a narrow silence if production responders must not receive the test. A silence still permits checking arrival at Alertmanager, but does not test notification delivery.
 
-> **Note:** The policy below enables User Workload Monitoring and deploys the test alert
-> automatically — you don't need to configure those manually.
+Keep the hub and managed cluster contexts explicit throughout the procedure:
 
----
+```bash
+export HUB_CONTEXT='<hub-kubeconfig-context>'
+export SPOKE_CONTEXT='<managed-cluster-kubeconfig-context>'
 
-## Step 1: Deploy the RBAC Resources (Hub Cluster)
+oc --context="$HUB_CONTEXT" whoami
+oc --context="$SPOKE_CONTEXT" whoami
+```
 
-The policy uses a hub template to look up the Hub's Ingress domain at render time. The policy
-engine needs RBAC permission to read Ingress resources. Apply this to the **Hub cluster**:
+Read the cluster ID on the managed cluster and retain it for verification:
+
+```bash
+export EXPECTED_CLUSTER_ID="$(oc --context="$SPOKE_CONTEXT" \
+  get clusterclaim id.openshift.io -o jsonpath='{.spec.value}')"
+
+printf 'Expected cluster ID: %s\n' "$EXPECTED_CLUSTER_ID"
+```
+
+Stop if the claim is missing or empty. This guide expects forwarding to add the `managed_cluster` external label using this ID.
+
+## Enable user workload monitoring and alert forwarding in ACM 5.0
+
+In ACM 5.0, configure user workload monitoring centrally through the **`MultiClusterObservability` CR on the hub**. A separate policy that sets `enableUserWorkload: true` in every managed cluster's monitoring ConfigMap is not required for this workflow.
+
+Keep two settings distinct:
+
+| CR setting | Purpose |
+|---|---|
+| `spec.capabilities.userWorkloads.metrics.default.enabled` | Enable the user workload metrics capability. |
+| `spec.capabilities.userWorkloads.metrics.alerts.enabled` | Enable forwarding of user workload alerts to the hub Alertmanager. |
+
+The API defines metrics collection and alert forwarding independently. Enabling metrics does not replace the need to enable and verify the alert forwarding capability. See the [MultiClusterObservability API definitions](https://github.com/stolostron/multicluster-observability-operator/blob/main/operators/multiclusterobservability/api/v1beta2/multiclusterobservability_types.go).
+
+### Update the existing CR
+
+Find the name of your existing CR and record its current configuration before changing it:
+
+```bash
+oc --context="$HUB_CONTEXT" get multiclusterobservability
+export MCO_NAME='<existing-multiclusterobservability-name>'
+
+oc --context="$HUB_CONTEXT" get multiclusterobservability "$MCO_NAME" -o yaml \
+  > multiclusterobservability.before.yaml
+```
+
+Save the following merge patch as `mco-user-workloads.patch.yaml`:
+
+```yaml
+spec:
+  capabilities:
+    platform:
+      metrics:
+        default:
+          enabled: true
+    userWorkloads:
+      metrics:
+        default:
+          enabled: true
+        alerts:
+          enabled: true
+```
+
+Apply the patch on the hub:
+
+```bash
+oc --context="$HUB_CONTEXT" patch multiclusterobservability "$MCO_NAME" \
+  --type=merge --patch-file=mco-user-workloads.patch.yaml
+```
+
+This updates the existing resource and preserves unrelated configuration such as storage settings. The example enables the platform metrics prerequisite as well as user workload metrics and alert forwarding. Review the MCOA placements first: these capabilities affect the clusters selected for the add-on, not just the cluster on which you will create the synthetic test alert.
+
+If the CR is managed through GitOps, make the change in its source repository. Keep these ongoing capabilities separate from temporary test resources.
+
+### Verify reconciliation before creating the test
+
+Check the hub CR and the add-on status for the intended managed cluster:
+
+```bash
+oc --context="$HUB_CONTEXT" get multiclusterobservability "$MCO_NAME" -o yaml
+
+oc --context="$HUB_CONTEXT" -n '<managed-cluster-name>' \
+  get managedclusteraddon multicluster-observability-addon -o yaml
+
+oc --context="$SPOKE_CONTEXT" -n openshift-user-workload-monitoring get pods
+```
+
+Wait for User Workload Monitoring and the add-on to become ready. Verify the resulting forwarding configuration as a diagnostic check; let ACM manage its configuration rather than introducing a second policy that replaces it:
+
+```bash
+oc --context="$SPOKE_CONTEXT" -n openshift-user-workload-monitoring \
+  get configmap user-workload-monitoring-config \
+  -o jsonpath='{.data.config\.yaml}'
+```
+
+Confirm that the destination is the intended hub Alertmanager and that the expected cluster identity is attached. The test below expects the external label `managed_cluster` to contain the managed cluster ID.
+
+If authentication or TLS fails, inspect the referenced Secret names and key names without printing credential values. Common provisioned names start with `observability-alertmanager-accessor-` and `hub-alertmanager-router-ca-`. The `bearerToken` and `tlsConfig.ca` references in this monitoring configuration select **Secrets**, not ConfigMaps. Keep TLS certificate verification enabled.
+
+A CR that requests a capability is not proof that the data path works. The following test checks actual rule evaluation and arrival at the hub.
+
+## Step 1: create the temporary test alert
+
+This main procedure creates the test directly on one managed cluster. If you want RHACM to distribute it, use the optional policy section below **instead**.
+
+Confirm that `mcoa-alert-test` does not already exist. If it does, inspect its contents and choose a different dedicated test namespace rather than taking ownership of an existing project.
+
+```bash
+oc --context="$SPOKE_CONTEXT" get namespace mcoa-alert-test
+```
+
+For a new namespace, save this manifest as `mcoa-alert-test.yaml`:
 
 ```yaml
 apiVersion: v1
-kind: ServiceAccount
+kind: Namespace
 metadata:
-  name: hub-ingress-reader
-  namespace: open-cluster-management-global-set
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: hub-ingress-reader-role
-rules:
-  - apiGroups: ["config.openshift.io"]
-    resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: hub-ingress-reader-binding
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: hub-ingress-reader-role
-subjects:
-  - kind: ServiceAccount
-    name: hub-ingress-reader
-    namespace: open-cluster-management-global-set
-```
-
-## Step 2: Deploy the Policy (Hub Cluster)
-
-Apply the following policy to your **Hub cluster**. It does four things in one shot:
-
-1. Enables User Workload Monitoring on the spoke
-2. Discovers the hub-provisioned secrets dynamically and configures alert forwarding
-3. Creates a test namespace
-4. Deploys an always-firing test alert
-
-> **Note:** `remediationAction: enforce` means this policy configures the spoke immediately
-> upon binding. Change to `inform` if you want to preview before applying.
-
-```yaml
-apiVersion: policy.open-cluster-management.io/v1
-kind: Policy
-metadata:
-  name: mcoa-uwm-full
-  namespace: open-cluster-management-global-set
-  annotations:
-    policy.open-cluster-management.io/categories: CM Configuration Management
-    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
-    policy.open-cluster-management.io/standards: NIST SP 800-53
-spec:
-  disabled: false
-  remediationAction: enforce
-  hubTemplateOptions:
-    serviceAccountName: hub-ingress-reader
-  policy-templates:
-
-    # 1. Enable User Workload Monitoring
-    # ----------------------------------------------------------
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: enable-user-workload-monitoring
-        spec:
-          remediationAction: enforce
-          severity: medium
-          namespaceSelector:
-            include: ["openshift-monitoring"]
-          object-templates:
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: v1
-                kind: ConfigMap
-                metadata:
-                  name: cluster-monitoring-config
-                  namespace: openshift-monitoring
-                data:
-                  config.yaml: |
-                    enableUserWorkload: true
-
-    # 2. Configure Alert Forwarding (Dynamic Discovery)
-    # ----------------------------------------------------------
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: mcoa-alert-forward-uwl
-        spec:
-          remediationAction: enforce
-          severity: medium
-          namespaceSelector:
-            include: ["openshift-user-workload-monitoring"]
-          object-templates-raw: |
-            {{- /* Discover Hub-specific Secret names on the Spoke */ -}}
-            {{- $tokenSecret := "" -}}
-            {{- $caSecret := "" -}}
-            {{- range (lookup "v1" "Secret" "openshift-user-workload-monitoring" "").items -}}
-              {{- if hasPrefix "observability-alertmanager-accessor-" .metadata.name -}}
-                {{- $tokenSecret = .metadata.name -}}
-              {{- end -}}
-              {{- if hasPrefix "hub-alertmanager-router-ca-" .metadata.name -}}
-                {{- $caSecret = .metadata.name -}}
-              {{- end -}}
-            {{- end -}}
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: v1
-                kind: ConfigMap
-                metadata:
-                  name: user-workload-monitoring-config
-                  namespace: openshift-user-workload-monitoring
-                data:
-                  config.yaml: |
-                    prometheus:
-            {{- if and $tokenSecret $caSecret }}
-                      additionalAlertmanagerConfigs:
-                      - apiVersion: v2
-                        bearerToken:
-                          key: token
-                          name: {{ $tokenSecret }}
-                        scheme: https
-                        staticConfigs:
-                        - alertmanager-open-cluster-management-observability.{{hub (lookup "config.openshift.io/v1" "Ingress" "" "cluster").spec.domain hub}}
-                        tlsConfig:
-                          ca:
-                            key: service-ca.crt
-                            name: {{ $caSecret }}
-                          insecureSkipVerify: false
-            {{- end }}
-                      externalLabels:
-                        managed_cluster: '{{ fromClusterClaim "id.openshift.io" }}'
-
-    # 3. Create Test Infrastructure (Namespace)
-    # ----------------------------------------------------------
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: mcoa-test-namespace
-        spec:
-          remediationAction: enforce
-          severity: low
-          object-templates:
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: v1
-                kind: Namespace
-                metadata:
-                  name: mcoa-alert-test
-                  labels:
-                    mcoa-test: "true"
-
-    # 4. Deploy Always-Firing Test Alert
-    # ----------------------------------------------------------
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: mcoa-test-alert-rule
-        spec:
-          remediationAction: enforce
-          severity: low
-          namespaceSelector:
-            include: ["mcoa-alert-test"]
-          object-templates:
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: monitoring.coreos.com/v1
-                kind: PrometheusRule
-                metadata:
-                  name: force-test-alert
-                  namespace: mcoa-alert-test
-                  labels:
-                    openshift.io/prometheus-rule-evaluation-scope: leaf-prometheus
-                spec:
-                  groups:
-                    - name: mcoa-test-group
-                      rules:
-                        - alert: MCOA_Pipeline_Test_Alert
-                          expr: vector(1)
-                          for: 1m
-                          labels:
-                            severity: critical
-                            testing_mcoa: "true"
-                          annotations:
-                            summary: "MCOA UWL Alert Forwarding is Working"
-                            description: "Test alert traversing from spoke to Hub Alertmanager."
-
----
-apiVersion: policy.open-cluster-management.io/v1
-kind: PlacementBinding
-metadata:
-  name: mcoa-uwm-full-placement
-  namespace: open-cluster-management-global-set
-placementRef:
-  apiGroup: cluster.open-cluster-management.io
-  kind: Placement
-  name: global
-subjects:
-  - apiGroup: policy.open-cluster-management.io
-    kind: Policy
-    name: mcoa-uwm-full
-```
-
-### What this policy does
-
-| Template | Action |
-|----------|--------|
-| **enable-user-workload-monitoring** | Sets `enableUserWorkload: true` in `cluster-monitoring-config` on the spoke |
-| **mcoa-alert-forward-uwl** | Discovers the hub-provisioned bearer token Secret and CA ConfigMap by prefix, then configures `additionalAlertmanagerConfigs` with TLS and the `managed_cluster` external label |
-| **mcoa-test-namespace** | Creates the `mcoa-alert-test` namespace on the spoke |
-| **mcoa-test-alert-rule** | Deploys a `PrometheusRule` with `vector(1)` that fires immediately |
-
-The alert forwarding template uses **dynamic secret discovery** — it iterates over all Secrets
-in `openshift-user-workload-monitoring` and matches by prefix rather than constructing names
-from the Hub domain. This is more resilient to naming variations across environments. If the
-secrets haven't been provisioned yet, the `additionalAlertmanagerConfigs` block is skipped
-entirely, preventing a broken configuration.
-
-The `externalLabels` block stamps every forwarded alert with a `managed_cluster` label derived
-from the spoke's cluster ID claim, so you always know which cluster an alert originated from.
-
-The Hub's Ingress domain is resolved at policy render time via a hub template
-(`{{hub ... hub}}`), which requires the `hub-ingress-reader` ServiceAccount created in Step 1.
-
-
-## Step 3: Verify the Pipeline
-
-Allow up to two minutes after the policy is applied, then check both ends of the pipeline.
-
-### On the Managed Cluster
-
-1. Open the **OpenShift Web Console**.
-2. Navigate to **Observe -> Alerting**.
-3. You should see `MCOA_Pipeline_Test_Alert` in a **Firing** state.
-
-This confirms the local User Workload Prometheus evaluated the rule correctly.
-
-### On the Hub Cluster
-
-Red Hat Advanced Cluster Management includes the amtool (Alertmanager CLI) utility inside the pod specifically for this purpose
-
-Run the following command to execute into the active Alertmanager pod on the Hub and list all currently firing alerts:
-
-```bash
-oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- amtool alert --alertmanager.url="http://localhost:9093"
-```
-To filter specifically for your MCOA test alert and view the labels (which will prove the managed_cluster tag successfully traversed the network):
-
-```bash
-oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- amtool alert query alertname="MCOA_Pipeline_Test_Alert" --alertmanager.url="http://localhost:9093"
-```
-If you prefer to see the raw JSON output to verify every label exactly as you were attempting to do with your Python snippet, you can use the local curl inside the pod, which is trusted and not blocked by the OAuth proxy:
-
-```bash
-oc -n open-cluster-management-observability exec -it observability-alertmanager-0 -c alertmanager -- curl -s http://localhost:9093/api/v2/alerts | grep -A 10 "MCOA_Pipeline_Test_Alert"
-```
-
-If the alert shows up in the amtool or curl output with the correct managed_cluster label, your entire forwarding pipeline is successfully configured.
-
-
-## Step 4: Clean Up
-
-Once you've verified the pipeline, remove the test resources to stop the alert from firing.
-
-```bash
-kubectl delete namespace mcoa-alert-test
-```
-
-Deleting the namespace removes both the `PrometheusRule` and the test namespace. The alert
-will resolve in Alertmanager within a few minutes.
-
-To remove the entire policy (including the forwarding configuration and UWM enablement):
-
-```bash
-kubectl delete policy mcoa-uwm-full -n open-cluster-management-global-set
-kubectl delete placementbinding mcoa-uwm-full-placement -n open-cluster-management-global-set
-```
-
-
-## Things Worth Knowing
-
-**The `leaf-prometheus` label is mandatory.**
-Without it, the rule is evaluated by the Thanos Ruler instead of the local User Workload
-Prometheus. The MCOA forwarding path is specific to the local Prometheus, so the label is
-required for this test to reflect a real forwarding scenario.
-
-**`for: 1m` introduces a deliberate delay.**
-Prometheus won't transition the alert to `Firing` until the condition has been true for one
-continuous minute. This mirrors real-world alert behaviour. If you want an instant fire for
-rapid iteration, change `for: 1m` to `for: 0m` — but be aware this isn't representative of
-how most production alerts are configured.
-
-**The forwarding config is conditional.**
-If the Observability operator hasn't provisioned the bearer token Secret and CA ConfigMap to
-the spoke yet, the policy will still apply — it just won't include the
-`additionalAlertmanagerConfigs` block. Once the secrets appear, the next policy evaluation
-will pick them up and add the forwarding configuration.
-
-
-## Troubleshooting Quick Reference
-
-| Symptom | Likely Cause |
-|---------|--------------|
-| Alert not firing on spoke | `enableUserWorkload: true` not applied yet; check `enable-user-workload-monitoring` ConfigurationPolicy status |
-| Alert fires on spoke but not Hub | Secret or CA ConfigMap not provisioned on spoke; verify Observability operator is running |
-| Alert on Hub missing `managed_cluster` label | `fromClusterClaim "id.openshift.io"` not resolving; verify cluster claim exists |
-| Policy not applying | `Placement` named `global` doesn't exist; check PlacementBinding |
-| Policy compliant but no forwarding config | Secrets not yet provisioned — the conditional block was skipped; check `openshift-user-workload-monitoring` for `observability-alertmanager-accessor-*` |
-| Hub template error | `hub-ingress-reader` ServiceAccount or RBAC not created; apply Step 1 |
-
-
-## Alternative: ScrapeConfig-Based Alert Collection
-
-The policy-based approach above uses `additionalAlertmanagerConfigs` to push alerts from the
-spoke's Prometheus directly to the Hub Alertmanager. An alternative is to **pull** alerts via
-federation using a `ScrapeConfig` resource.
-
-The MCO operator already uses this pattern for platform alerts (see
-[`platform-metrics-alerts`](https://github.com/stolostron/multicluster-observability-operator/blob/main/operators/multiclusterobservability/manifests/base/grafana/alerts/scrape-config.yaml)).
-The same approach works for User Workload alerts.
-
-### UWL Alerts ScrapeConfig
-
-Apply the following `ScrapeConfig` to the **Hub cluster**. It federates the `ALERTS` metric
-from each managed cluster's User Workload Prometheus:
-
-```yaml
-apiVersion: monitoring.rhobs/v1alpha1
-kind: ScrapeConfig
-metadata:
+  name: mcoa-alert-test
   labels:
-    app.kubernetes.io/component: uwl-metrics-collector
-    app.kubernetes.io/part-of: multicluster-observability-addon
-    app.kubernetes.io/managed-by: multicluster-observability-operator
-  name: uwl-metrics-alerts
-  namespace: open-cluster-management-observability
+    mcoa-test: "true"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: force-test-alert
+  namespace: mcoa-alert-test
+  labels:
+    openshift.io/prometheus-rule-evaluation-scope: leaf-prometheus
 spec:
-  jobName: uwl-alerts
-  metricsPath: /federate
-  params:
-    match[]:
-    - '{__name__="ALERTS"}'
-  metricRelabelings:
-  - action: labeldrop
-    regex: managed_cluster|id
+  groups:
+    - name: mcoa-test-group
+      rules:
+        - alert: MCOAPipelineTestAlert
+          expr: vector(1)
+          for: 1m
+          labels:
+            severity: warning
+            testing_mcoa: "true"
+          annotations:
+            summary: "Synthetic user workload alert forwarding test"
+            description: "Test signal for verifying delivery from managed-cluster User Workload Prometheus to hub Alertmanager."
 ```
 
-A ready-to-use copy is available at [`uwl-alerts-scrape-config.yaml`](uwl-alerts-scrape-config.yaml).
+Apply it to the managed cluster:
 
-### AddonDeploymentConfig Integration
+```bash
+oc --context="$SPOKE_CONTEXT" apply -f mcoa-alert-test.yaml
+```
 
-For the MCO addon agent to recognize and deploy this ScrapeConfig to managed clusters, it
-must be registered in the `AddOnDeploymentConfig`. The addon agent reads the list of
-ScrapeConfig resources from its configuration and deploys them as part of the
-`PrometheusAgent` setup on each spoke.
+`vector(1)` returns a constant sample, so the expression remains active whenever the rule evaluates successfully. With `for: 1m`, the alert initially becomes pending and transitions to firing after the condition has remained active for the configured duration. Deployment, reconciliation, and evaluation intervals add time; do not use two minutes as a guaranteed completion deadline.
 
-If you are adding this ScrapeConfig outside the operator (i.e., not baked into the MCO
-manifests), you need to ensure the addon picks it up. Check your
-`AddOnDeploymentConfig` in `open-cluster-management-observability` and verify the
-ScrapeConfig is included in the agent's resource list.
+The `leaf-prometheus` label makes User Workload Prometheus evaluate this rule rather than Thanos Ruler. That matters because this test configures forwarding from Prometheus. It is not a blanket requirement for every user workload alerting architecture. See [OpenShift rule evaluation behavior](https://docs.redhat.com/en/documentation/monitoring_stack_for_red_hat_openshift/4.19/html-single/monitoring_key_concepts/).
 
-### When to Use Which Approach
+## Step 2: verify local rule evaluation
 
-| | Policy (`additionalAlertmanagerConfigs`) | ScrapeConfig (federation) |
+On the managed cluster, open the OpenShift web console and navigate to **Observe > Alerting**. Locate `MCOAPipelineTestAlert` and confirm that it becomes **Firing**. Confirm that it belongs to the `mcoa-alert-test` namespace.
+
+If the rule does not appear or remains pending unexpectedly, check the `PrometheusRule`, User Workload Monitoring readiness, and rule evaluation errors before investigating hub connectivity.
+
+Local firing confirms rule evaluation. It does not yet confirm forwarding.
+
+## Step 3: verify arrival at the hub
+
+List the hub Alertmanager pods and choose a running pod. The example below uses `observability-alertmanager-0`; substitute the pod name if your deployment differs. Do not assume replica zero is a uniquely active instance in an HA deployment.
+
+```bash
+oc --context="$HUB_CONTEXT" -n open-cluster-management-observability get pods
+
+oc --context="$HUB_CONTEXT" -n open-cluster-management-observability \
+  exec observability-alertmanager-0 -c alertmanager -- \
+  amtool alert query \
+  --alertmanager.url=http://localhost:9093 \
+  alertname=MCOAPipelineTestAlert \
+  managed_cluster="$EXPECTED_CLUSTER_ID" \
+  testing_mcoa=true
+```
+
+Confirm that the returned alert has the expected namespace and cluster ID. The `managed_cluster` value here is a cluster identifier, not necessarily the managed cluster's display name.
+
+For structured inspection, forward the selected Alertmanager pod's local API to your workstation. This requires permission to port-forward to the pod:
+
+```bash
+oc --context="$HUB_CONTEXT" -n open-cluster-management-observability \
+  port-forward pod/observability-alertmanager-0 19093:9093
+```
+
+Keep that command running. In another terminal, with `EXPECTED_CLUSTER_ID` set to the same value, inspect the matching alert:
+
+```bash
+curl --fail --silent --show-error http://127.0.0.1:19093/api/v2/alerts |
+  jq --arg cluster "$EXPECTED_CLUSTER_ID" '
+    .[]
+    | select(.labels.alertname == "MCOAPipelineTestAlert")
+    | select(.labels.managed_cluster == $cluster)
+    | select(.labels.testing_mcoa == "true")
+    | {labels, status, startsAt, endsAt}
+  '
+```
+
+This uses `curl` and `jq` on your workstation and does not assume either tool is installed in the Alertmanager container. Stop port-forwarding when finished.
+
+Seeing the matching alert at the hub confirms that it reached Alertmanager. A silence or inhibition can prevent notifications even when arrival succeeds. If notification delivery is part of your acceptance criteria, also confirm receipt at the agreed test receiver.
+
+## Step 4: remove the test and verify resolution
+
+For the direct deployment above, remove the test rule first:
+
+```bash
+oc --context="$SPOKE_CONTEXT" -n mcoa-alert-test \
+  delete prometheusrule force-test-alert
+```
+
+Verify that the alert stops firing locally and is no longer active at hub Alertmanager. Allow time for reconciliation and alert expiry. Then remove the dedicated test namespace:
+
+```bash
+oc --context="$SPOKE_CONTEXT" delete namespace mcoa-alert-test
+```
+
+If you used a policy or GitOps controller to create these resources, stop that controller's enforcement of the test first. Otherwise, it can recreate the rule and namespace.
+
+Keep the CR capabilities enabled if they are intended for ongoing use. If they were enabled only for this exercise, restore their previous values through the hub `MultiClusterObservability` CR or its GitOps source, after checking for other workloads and concurrent changes. Do not roll back ACM-managed configuration by deleting or replacing managed-cluster monitoring ConfigMaps. Remove the test-specific silence or receiver configuration when it is no longer needed.
+
+## Optional: distribute the test with an RHACM policy
+
+For repeatable fleet validation, RHACM can distribute the temporary rule. Keep the test policy separate from permanent monitoring and forwarding configuration.
+
+1. Use a dedicated `Placement` selecting only the intended test cluster initially. Confirm its `PlacementDecision` and the required cluster-set binding. Do not assume a Placement named `global` exists or is appropriate for a synthetic test.
+2. Create a `Policy` containing two `ConfigurationPolicy` templates: one for the dedicated namespace and one for the `PrometheusRule` from Step 1.
+3. Bind that policy to the dedicated Placement using a `PlacementBinding` in the same hub namespace.
+4. Begin with the parent policy's `remediationAction: inform`, review its results, then change it to `enforce` when ready. Inform mode reports differences; it does not create missing prerequisites or run the alert test.
+5. Verify policy deployment on the managed cluster, then perform the local and hub checks above.
+
+For cleanup, withdraw the test policy from the selected clusters and confirm that its propagated configuration policies are removed before manually deleting the rule and namespace. Deleting the namespace while the policy is enforcing is not sufficient.
+
+Alternatively, configure `pruneObjectBehavior: DeleteIfCreated` on the temporary namespace and rule templates **when creating the policy**, and verify its behavior on your release. Do not use automatic deletion of shared monitoring ConfigMaps as a rollback strategy. By default, policy deletion does not remove managed objects. See [RHACM policy cleanup](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.16/html/governance/supported-policies).
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| Test rule is absent | Verify the managed-cluster context, namespace, manifest application, or policy placement and compliance results. |
+| Rule exists but does not fire | Check UWM readiness, rule selection, the `leaf-prometheus` label, evaluation errors, and the `for` duration. |
+| Local alert fires but does not reach the hub | Check the configured destination, DNS and egress connectivity, route hostname, bearer-token validity, CA trust, and Prometheus notification errors. |
+| Forwarding configuration is missing | Check `spec.capabilities.userWorkloads.metrics.alerts.enabled`, MCO reconciliation, add-on placement and status, and credential provisioning. Metrics enablement alone is not the alert-forwarding check. |
+| Alert arrives without the expected cluster label | Inspect `prometheus.externalLabels`, the cluster claim, and any existing conflicting alert label or relabeling. |
+| Alert arrives but no notification is received | Inspect Alertmanager routing, silences, inhibition, grouping delays, and receiver delivery errors. |
+| Test resources reappear after deletion | Check enforcing policies and GitOps reconciliation. Withdraw the test from its source of configuration first. |
+
+## Optional: collect alert-state metrics for dashboards
+
+Prometheus exposes synthetic `ALERTS` time series for pending and firing alerts. Collecting those series can support dashboards and cross-cluster queries, but it is a different path from sending alerts to Alertmanager.
+
+| Path | Data received at the hub | What it validates |
 |---|---|---|
-| **How it works** | Spoke Prometheus pushes alerts to Hub Alertmanager | Hub federates `ALERTS` metric from spoke Prometheus |
-| **Where alerts land** | Hub Alertmanager (native alerts) | Hub Thanos/Prometheus (as metrics) |
-| **Perses/Grafana visibility** | No — Alertmanager only | Yes — queryable as metrics in Grafana dashboards |
-| **Best for** | Real-time alert routing and notification | Dashboarding, trend analysis, cross-cluster alert views |
-| **Requires** | Bearer token Secret + CA ConfigMap on spoke | ScrapeConfig registered in addon config |
+| Prometheus alert forwarding | Native alerts in Alertmanager | Alert delivery for routing and notifications |
+| Federation and remote write | `ALERTS` time series in metrics storage | Collection of queryable alert-state data |
 
-You can use both approaches together — they are complementary, not mutually exclusive.
+In the MCOA agent architecture, a managed-cluster agent federates from its local Prometheus and remote-writes collected metrics to the hub. Creating a ScrapeConfig on the hub is configuration distribution; it does not by itself make the hub directly scrape all managed clusters.
 
+For a custom user workload ScrapeConfig:
 
-## Wrapping Up
+- Use the documented `app.kubernetes.io/component: user-workload-metrics-collector` label.
+- Select the `ALERTS` metric through the `/federate` endpoint.
+- Add the ScrapeConfig reference to the intended placement configuration in the `ClusterManagementAddOn` resource.
+- Verify target selection, authentication, label handling, and collection on your release. Do not assume an `AddOnDeploymentConfig` resource list registers a custom ScrapeConfig.
 
-Using `vector(1)` as a test expression is one of those small tricks that makes a big
-difference when validating observability pipelines. It gives you a deterministic, repeatable
-signal that exercises every part of the stack — authentication, TLS, routing, and label
-propagation — without any application scaffolding.
+Follow the [ACM custom metrics configuration procedure](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.15/html/observability/observing-environments-intro) for the complete configuration. See [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) for the meaning of the `ALERTS` series.
 
-Once you've confirmed the pipeline is healthy, swap out the test rule for your real alerting
-rules with confidence.
+These paths can coexist. Success on one does not prove success on the other.
+
+## Next steps
+
+Use this synthetic alert as a repeatable check when enabling forwarding, changing certificates, or investigating delivery failures. Record local firing, hub arrival with the expected cluster identity, and clean resolution as separate results.
+
+Once those checks pass, validate your real alert rules and notification routes. A successful synthetic test establishes a working delivery path; application-specific conditions and routing still need their own checks.
